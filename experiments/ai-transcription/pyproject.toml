@@ -1,0 +1,9 @@
+[project]
+name = "ai-transcription"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "mineru-vl-utils[mlx]>=2.0.9",
+    "mlx-vlm>=0.7.12",
+    "pillow>=13.0.0",
+]
