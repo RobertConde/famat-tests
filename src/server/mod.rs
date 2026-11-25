@@ -1,5 +1,6 @@
 //! Server-only code: compiled with `--features server`, never into WASM.
 
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -11,6 +12,7 @@ pub mod storage;
 use axum::{
     Extension, Router,
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -27,6 +29,7 @@ use storage::Storage;
 pub struct AppState {
     pub db: PgPool,
     pub storage: Storage,
+    pub csrf_key: auth::CsrfKey,
 }
 
 /// The full axum router: Dioxus SSR and server functions, plus plain routes
@@ -34,7 +37,8 @@ pub struct AppState {
 pub async fn router(config: Config) -> anyhow::Result<Router> {
     let db = db::connect(&config.database).await?;
     let storage = Storage::new(&config.storage);
-    let state = AppState { db, storage };
+    let csrf_key = auth::CsrfKey::load(&db).await?;
+    let state = AppState { db, storage, csrf_key };
 
     Ok(dioxus::server::router(app::App)
         .route("/tests/{test_id}/documents/{id}/pdf", get(documents::pdf))
@@ -42,6 +46,7 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
         .route("/documents/{id}/pdf", get(documents::pdf_of_first_test))
         .route("/documents/{id}/original", get(documents::original_of_first_test))
         .route("/healthz", get(health))
+        .layer(middleware::from_fn(auth::same_origin_writes))
         .layer(Extension(state)))
 }
 

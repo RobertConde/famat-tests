@@ -18,6 +18,14 @@ scripts/dev-down.sh   # stop them (add --wipe to delete their data too)
 
 `dev-up.sh` generates the database password and the Garage key and writes them to `~/.cache/famat-dev/dev.env` (outside the repo; never commit it). Migrations run when the server starts.
 
+To log in as an Admin locally, set the passcode first (it is read from a prompt, or from stdin when piped, never from the command line):
+
+```sh
+scripts/with-dev-env.sh cargo run --features server -- set-passcode
+```
+
+Then open `/login`. Setting a new passcode ends every Admin session.
+
 ## Run the tests
 
 ```sh
@@ -51,10 +59,18 @@ The server reads its configuration from the environment:
 | `S3_KEY_PREFIX` | prefix for every object key, default empty |
 | `IP`, `PORT` | listen address, default `127.0.0.1:8080` |
 
+## Admin login
+
+- Only an argon2id hash of the shared passcode is stored, set by `famat set-passcode`. Sessions live in Postgres (only a SHA-256 of each cookie's token) and last 30 days.
+- Every Admin server function authorizes itself with `server::auth::require_admin` (reads) or `require_admin_form` (form posts, which also check the CSRF token). Anonymous callers get 401, a bad token 403.
+- Every non-GET request with another site's `Origin` is refused with 403.
+- Failed logins are limited to 5 per minute per `CF-Connecting-IP` (an IPv6 /64 counts as one visitor), falling back to the socket address when the header is absent. The header is trusted because the Cloudflare Tunnel is the only way in; don't expose the server's port directly.
+
 ## Layout
 
 - `src/app.rs`: the Dioxus app (routes, pages, server functions), compiled for both server and WASM
-- `src/server/`: server-only code: CLI, config, Postgres, Garage, and plain axum routes such as downloads
+- `src/app/admin.rs`: the login and logout pages and the Admin menu
+- `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, and plain axum routes such as downloads
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)
 - `scripts/`, `dev/`: local Postgres + Garage, and the run, test and bundle commands
