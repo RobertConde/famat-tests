@@ -29,7 +29,8 @@ main{max-width:64rem;margin:0 auto;padding:1rem}\
 table{border-collapse:collapse;width:100%}\
 th,td{text-align:left;padding:.35rem .5rem;border-bottom:1px solid #ddd;vertical-align:top}\
 .unknown{color:#aaa}\
-.documents a{margin-right:.75rem}\
+.documents .document{margin-right:.75rem}\
+.documents .original{font-size:.8em}\
 footer{text-align:center;color:#666;font-size:.875rem;padding:2rem 1rem}";
 
 #[component]
@@ -60,6 +61,9 @@ pub struct DocumentLink {
     pub id: i64,
     pub kind: String,
     pub label: Option<String>,
+    /// The Original's extension (without the dot) when the Original is not a
+    /// PDF, for the small download link beside the PDF one.
+    pub original_extension: Option<String>,
 }
 
 /// One Test in the search results.
@@ -120,9 +124,20 @@ fn Search() -> Element {
                         td { class: "test-type", Facet { value: test.test_type.clone() } }
                         td { class: "documents",
                             for document in test.documents.iter() {
-                                a { key: "{document.id}", href: "/documents/{document.id}/pdf",
-                                    "{document.kind}"
-                                    if let Some(label) = &document.label { " ({label})" }
+                                span { key: "{document.id}", class: "document",
+                                    a { href: "/tests/{test.id}/documents/{document.id}/pdf",
+                                        "{document.kind}"
+                                        if let Some(label) = &document.label { " ({label})" }
+                                    }
+                                    if let Some(extension) = &document.original_extension {
+                                        " "
+                                        a {
+                                            class: "original",
+                                            href: "/tests/{test.id}/documents/{document.id}/original",
+                                            title: "Download the Original",
+                                            if extension.is_empty() { "original" } else { ".{extension}" }
+                                        }
+                                    }
                                 }
                             }
                         }

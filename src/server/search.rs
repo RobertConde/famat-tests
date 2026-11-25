@@ -24,6 +24,8 @@ struct DocumentRecord {
     id: i64,
     kind: String,
     label: Option<String>,
+    /// NULL when the Original is a PDF.
+    original_extension: Option<String>,
 }
 
 /// Published, untrashed Tests with their Published, untrashed Documents.
@@ -56,10 +58,13 @@ pub async fn published_tests(db: &PgPool) -> Result<Vec<TestRow>, sqlx::Error> {
 
     let ids: Vec<i64> = tests.iter().map(|t| t.id).collect();
     let documents: Vec<DocumentRecord> = sqlx::query_as(
-        "SELECT td.test_id, d.id, k.name AS kind, d.label
+        "SELECT td.test_id, d.id, k.name AS kind, d.label,
+                CASE WHEN o.content_type <> 'application/pdf' AND o.extension <> 'pdf'
+                     THEN o.extension END AS original_extension
          FROM test_documents td
          JOIN documents d      ON d.id = td.document_id
          JOIN document_kinds k ON k.id = d.kind_id
+         LEFT JOIN document_files o ON o.document_id = d.id AND o.role = 'original'
          WHERE td.test_id = ANY($1) AND d.published AND d.trashed_at IS NULL
          ORDER BY k.display_order, k.name, d.label NULLS FIRST, d.id",
     )
@@ -73,6 +78,7 @@ pub async fn published_tests(db: &PgPool) -> Result<Vec<TestRow>, sqlx::Error> {
             id: d.id,
             kind: d.kind,
             label: d.label,
+            original_extension: d.original_extension,
         });
     }
 

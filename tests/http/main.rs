@@ -6,4 +6,5 @@
 mod support;
 
 mod documents;
+mod download_names;
 mod search_page;
