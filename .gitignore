@@ -1,6 +1,8 @@
 # Source exports (contain credentials / bulk data)
 code.tar.gz
 *.sql
+# ...except the app's own schema migrations.
+!/migrations/*.sql
 config.ini
 data/
 
@@ -16,3 +18,7 @@ experiments/*/pages/
 experiments/*/review.html
 experiments/*/*.log
 __pycache__/
+
+# Rust / dx build output
+/target
+/dist

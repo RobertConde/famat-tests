@@ -1,0 +1,65 @@
+[package]
+name = "famat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The FAMAT Test Bank: a searchable archive of past FAMAT and Mu Alpha Theta tests"
+
+[dependencies]
+# Pinned exactly: Dioxus breaks its API between minors (ADR 0001).
+dioxus = { version = "=0.7.10", features = ["fullstack", "router"] }
+serde = { version = "1", features = ["derive"] }
+
+# Server-only dependencies stay out of the WASM bundle.
+tokio = { version = "1.48", features = ["full"], optional = true }
+axum = { version = "0.8.4", optional = true }
+sqlx = { version = "0.9.1", default-features = false, features = [
+    "runtime-tokio",
+    "tls-none",
+    "postgres",
+    "derive",
+    "macros",
+    "migrate",
+], optional = true }
+aws-sdk-s3 = { version = "1", optional = true, features = ["behavior-version-latest"] }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+anyhow = { version = "1", optional = true }
+log = { version = "0.4", optional = true }
+
+[features]
+default = []
+web = ["dioxus/web"]
+server = [
+    "dioxus/server",
+    "dep:tokio",
+    "dep:axum",
+    "dep:sqlx",
+    "dep:aws-sdk-s3",
+    "dep:tokio-util",
+    "dep:anyhow",
+    "dep:log",
+]
+
+[dev-dependencies]
+# The HTTP test harness (tests/): it starts the real binary and talks to it,
+# Postgres and Garage from the outside.
+tokio = { version = "1.48", features = ["full"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "tls-none", "postgres"] }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+reqwest = { version = "0.12", default-features = false }
+scraper = "0.29"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[[test]]
+name = "http"
+path = "tests/http/main.rs"
+required-features = ["server"]
+
+# dx client release profile. Defining it replaces the ad-hoc one dx makes
+# (opt-level "s"), so it must inherit from release itself.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
