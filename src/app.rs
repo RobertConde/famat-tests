@@ -6,12 +6,19 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+mod admin;
+use admin::{AdminMenu, Login, Logout};
+
 #[derive(Routable, Clone, Debug, PartialEq)]
 #[rustfmt::skip]
 enum Route {
     #[layout(Shell)]
     #[route("/")]
     Search {},
+    #[route("/login?:error")]
+    Login { error: String },
+    #[route("/logout")]
+    Logout {},
 }
 
 #[component]
@@ -208,6 +215,7 @@ fn Search() -> Element {
     let total_text = thousands(total);
 
     rsx! {
+        AdminMenu {}
         form { id: "filters", method: "get", action: "/",
             fieldset { class: "filters",
                 legend { "Search Options" }

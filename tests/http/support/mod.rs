@@ -17,6 +17,7 @@
 //!   built, e.g. a `dx bundle` output with its `public/` directory beside it.
 //! - `FAMAT_TEST_KEEP=1`: keep each test's database, objects and server log.
 
+pub mod admin;
 pub mod download;
 pub mod fixtures;
 pub mod html;
@@ -115,6 +116,9 @@ pub struct TestApp {
     pub key_prefix: String,
     env: Env,
     database: String,
+    database_url: String,
+    /// The `famat` binary the server runs, also used for CLI commands.
+    binary: PathBuf,
     server: Child,
     log_path: PathBuf,
 }
@@ -142,19 +146,22 @@ impl TestApp {
         let log = File::create(&log_path).unwrap();
 
         let port = free_port();
-        let mut command = match std::env::var_os("FAMAT_TEST_SERVER") {
-            Some(binary) => Command::new(binary),
+        let (binary, mut command) = match std::env::var_os("FAMAT_TEST_SERVER") {
+            Some(binary) => (PathBuf::from(&binary), Command::new(binary)),
             None => {
                 // A cargo-built server has no dx bundle beside it; Dioxus needs
                 // some public directory, and the pages render without one.
                 let public = log_dir.join("empty-public");
                 std::fs::create_dir_all(&public).unwrap();
-                let mut command = Command::new(env!("CARGO_BIN_EXE_famat"));
+                let binary = PathBuf::from(env!("CARGO_BIN_EXE_famat"));
+                let mut command = Command::new(&binary);
                 command.env("DIOXUS_PUBLIC_PATH", public);
-                command
+                (binary, command)
             }
         };
         let server = command
+            // Serve as in production, not as under `dx serve`.
+            .env_remove("DIOXUS_CLI_ENABLED")
             .env("IP", "127.0.0.1")
             .env("PORT", port.to_string())
             .env("DATABASE_URL", &database_url)
@@ -184,6 +191,8 @@ impl TestApp {
             key_prefix,
             env,
             database,
+            database_url: database_url.clone(),
+            binary,
             server,
             log_path,
         };

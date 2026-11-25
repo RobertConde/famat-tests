@@ -49,13 +49,7 @@ impl std::fmt::Debug for StorageConfig {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
-            database: DatabaseConfig {
-                url: required("DATABASE_URL")?,
-                max_connections: optional("DATABASE_MAX_CONNECTIONS")
-                    .map(|v| v.parse().context("DATABASE_MAX_CONNECTIONS must be a number"))
-                    .transpose()?
-                    .unwrap_or(10),
-            },
+            database: DatabaseConfig::from_env()?,
             storage: StorageConfig {
                 endpoint: required("S3_ENDPOINT")?,
                 region: required("S3_REGION")?,
@@ -64,6 +58,19 @@ impl Config {
                 secret_access_key: required("S3_SECRET_ACCESS_KEY")?,
                 key_prefix: optional("S3_KEY_PREFIX").unwrap_or_default(),
             },
+        })
+    }
+}
+
+impl DatabaseConfig {
+    /// Just the database settings, for CLI commands that need nothing else.
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Self {
+            url: required("DATABASE_URL")?,
+            max_connections: optional("DATABASE_MAX_CONNECTIONS")
+                .map(|v| v.parse().context("DATABASE_MAX_CONNECTIONS must be a number"))
+                .transpose()?
+                .unwrap_or(10),
         })
     }
 }
