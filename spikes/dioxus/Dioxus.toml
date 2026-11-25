@@ -1,0 +1,11 @@
+[application]
+name = "famat-dioxus-spike"
+
+[web.app]
+title = "FAMAT Test Bank (spike)"
+
+[web]
+# Write .br copies of wasm/js in release bundles; the server sends them to
+# clients that accept brotli. Off by default, and the server never compresses
+# on the fly.
+pre_compress = true
