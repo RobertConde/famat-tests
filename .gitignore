@@ -1,0 +1,18 @@
+# Source exports (contain credentials / bulk data)
+code.tar.gz
+*.sql
+config.ini
+data/
+
+# Agent worktrees
+.claude/worktrees/
+
+# Experiment outputs and envs
+experiments/*/.venv/
+experiments/*/runs/
+experiments/*/pages/
+
+.DS_Store
+experiments/*/review.html
+experiments/*/*.log
+__pycache__/
