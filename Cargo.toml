@@ -25,6 +25,7 @@ aws-sdk-s3 = { version = "1", optional = true, features = ["behavior-version-lat
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 anyhow = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
 
 [features]
 default = []
@@ -38,6 +39,7 @@ server = [
     "dep:tokio-util",
     "dep:anyhow",
     "dep:log",
+    "dep:serde_urlencoded",
 ]
 
 [dev-dependencies]
