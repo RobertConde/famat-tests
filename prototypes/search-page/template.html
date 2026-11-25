@@ -1,0 +1,193 @@
+<title>Test Bank Search Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* PROTOTYPE (throwaway), round 2: a simple filter row like the original FAMAT archive, plus a results table. Two variants differ in how Documents show. */
+/* Layout: title, one row of dropdowns, count, table. Light only, sans only. */
+:root {
+  --paper: #ffffff; --ink: #18202c; --muted: #5d6675; --rule: #dfe3e8; --head: #f4f6f8;
+  --accent: #1f4e9c; --accent-soft: #e8eef9; --faint: #a4acb8;
+  --f-body: "Public Sans", system-ui, sans-serif; --f-mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box }
+body { background: var(--paper); color: var(--ink); font: 15px/1.45 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 88px }
+main { max-width: 1180px; margin-inline: auto }
+h1 { font-size: 1.35rem; font-weight: 700; margin: 0; padding-block: 18px 12px }
+button, select, input { font: inherit; color: inherit }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums }
+h1 { text-align: center }
+.filters { width: fit-content; max-width: 100%; margin: 4px auto 0; border: 1px solid var(--rule); border-radius: 6px; padding: 12px 16px 14px;
+  display: grid; grid-template-columns: max-content minmax(0, 17rem); gap: 8px 12px; align-items: center }
+.filters legend { font-weight: 700; padding-inline: 4px }
+.filters .l { text-align: right; font-weight: 600; font-size: .9rem }
+.filters select { width: 100%; min-width: 0; padding: 5px 8px; background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; font-size: .9rem; color: var(--ink) }
+.filters .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .9rem }
+.filters .checks label { display: flex; gap: 5px; align-items: center }
+.filters .actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 12px; align-items: center; padding-top: 4px }
+.filters .reset { border: 0; background: none; color: var(--accent); cursor: pointer }
+.filters .go { border: 1px solid var(--accent); background: var(--accent); color: var(--paper); border-radius: 5px; padding: 5px 18px; font-weight: 600; cursor: pointer }
+.count { text-align: center }
+.count { font-size: .85rem; color: var(--muted); padding-block: 10px }
+.count b { color: var(--ink) }
+.tbl { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px }
+table { border-collapse: collapse; width: 100% }
+th { text-align: left; font-size: .75rem; color: var(--muted); font-weight: 600; background: var(--head); padding: 7px 10px; white-space: nowrap; border-bottom: 1px solid var(--rule) }
+td { padding: 7px 10px; border-bottom: 1px solid var(--rule); vertical-align: top }
+tr:last-child td { border-bottom: 0 }
+.u { color: var(--faint) }
+.docs { display: grid; gap: 2px }
+a { color: var(--accent); text-decoration: none; font-weight: 500 }
+a:hover { text-decoration: underline }
+a.orig { font-weight: 400; font-size: .8rem; color: var(--muted); margin-left: 6px }
+.none { color: var(--faint) }
+.split { position: relative; display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper) }
+.split > button { border: 0; background: none; padding: 4px 8px; cursor: pointer; color: var(--ink); display: inline-flex; align-items: center }
+.split > button + button { border-left: 1px solid var(--rule); padding: 4px 6px; color: var(--muted) }
+.split > button:hover { background: var(--head) }
+.split svg { width: 16px; height: 16px }
+.menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 210px; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / .14); padding: 4px; display: grid; text-align: left }
+.menu > button { border: 0; background: none; padding: 6px 10px; border-radius: 5px; cursor: pointer; display: flex; justify-content: space-between; gap: 16px; font-size: .9rem }
+.menu > button:hover, .menu > button:focus-visible { background: var(--head) }
+.menu .n { color: var(--muted); font-variant-numeric: tabular-nums }
+.menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 0 }
+.menu .fmt { display: flex; gap: 2px; padding: 4px 6px; align-items: center; font-size: .8rem; color: var(--muted) }
+.menu .fmt span { margin-right: auto }
+.menu .fmt button { border: 0; background: none; border-radius: 4px; padding: 3px 8px; font-size: .8rem; cursor: pointer }
+.menu .fmt button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600 }
+.bulk { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; padding: 8px; margin-bottom: 8px; background: var(--head); border-radius: 6px; font-size: .9rem }
+.bulk .linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0 }
+th.c, td.c { width: 1%; padding-right: 0 }
+.zip { font-size: .8rem; padding: 2px 10px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent-soft); color: var(--accent); font-weight: 600; cursor: pointer }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding-block: 10px; font-size: .85rem }
+.pager button { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 3px 10px; cursor: pointer }
+.empty { padding: 28px; text-align: center; color: var(--muted) }
+@media (max-width: 700px) {
+  .filters { width: 100%; grid-template-columns: max-content minmax(0, 1fr) }
+  .tbl { border: 0 }
+  thead { display: none }
+  tr { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 10px 0; border-bottom: 1px solid var(--rule) }
+  td { border: 0; padding: 0 }
+  td[data-l]::before { content: attr(data-l) ": "; color: var(--muted); font-size: .8rem }
+  td.y { grid-row: span 2; font-weight: 600 }
+  tr { position: relative } th.c { display: none } td.c { position: absolute; right: 0; top: 10px }
+  td.wide { grid-column: 1 / -1 }
+}
+.switcher { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px)); z-index: 30;
+  display: flex; align-items: center; gap: 4px; background: #111; color: #fff; border-radius: 999px; padding: 4px; box-shadow: 0 6px 20px rgb(0 0 0 / .3); font-size: .85rem; max-width: calc(100vw - 32px) }
+.switcher button { border: 0; background: #333; color: #fff; border-radius: 999px; width: 32px; height: 32px; cursor: pointer }
+.switcher span { padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.credit { text-align: center; color: var(--muted); font-size: .85rem; padding-block: 28px 8px; border-top: 1px solid var(--rule); margin-top: 24px }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(62px + env(safe-area-inset-bottom, 0px)); z-index: 31; max-width: min(620px, calc(100vw - 32px));
+  background: var(--ink); color: var(--paper); border-radius: 6px; padding: 9px 12px; font-size: .8rem }
+.toast .mono { word-break: break-all }
+</style>
+
+<main>
+  <h1>FAMAT Test Bank</h1>
+  <form id="filters"><fieldset class="filters" id="fs"><legend>Search Options</legend></fieldset></form>
+  <div class="count" id="count"></div>
+  <div id="bulk"></div>
+  <div id="results"></div>
+  <footer class="credit">Maintained by Doral Academy Mu Alpha Theta</footer>
+</main>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const D = /*CATALOGUE*/null;
+const HAS = { "Test": "q", "Condensed Test": "q", "Combined Test+Solutions": "qas", "Answers": "a", "Solutions": "as", "Errata": "", "Other": "" };
+const F = [["month", "Month", D.months], ["comp", "Competition", D.comps], ["div", "Division/Level", D.divs], ["type", "Test type", D.types], ["host", "Host", D.hosts]];
+const T = D.tests.map(([id, year, comp, month, div, type, host, docs]) => {
+  const ds = docs.map(([did, k, e]) => ({ id: did, kind: D.kinds[k], ext: D.exts[e] })), h = ds.map(d => HAS[d.kind]).join("");
+  return { id, year, comp, month, div, type, host, docs: ds, q: h.includes("q"), a: h.includes("a"), s: h.includes("s") };
+}).sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || (a.month < 0 ? 99 : a.month) - (b.month < 0 ? 99 : b.month) || a.comp - b.comp || a.host - b.host || a.div - b.div || a.type - b.type);
+const years = [...new Set(T.map(t => t.year).filter(Boolean))].sort((a, b) => b - a);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const v = (k, t) => { const f = F.find(x => x[0] === k); return t[k] < 0 ? null : f[2][t[k]]; };
+const u = s => s ? esc(s) : `<span class="u">—</span>`;
+const S = { year: "", q: false, a: false, s: false, page: 0, sel: new Set(), fmt: "pdf", menu: null }; F.forEach(f => S[f[0]] = "");
+
+document.getElementById("fs").insertAdjacentHTML("beforeend",
+  `<label class="l" for="f-year">Year:</label><select id="f-year"><option value="">Any</option>${years.map(y => `<option>${y}</option>`).join("")}</select>` +
+  F.map(([k, n, list]) => `<label class="l" for="f-${k}">${n}:</label><select id="f-${k}"><option value="">Any</option>${list.map((x, i) => `<option value="${i}">${esc(x)}</option>`).join("")}<option value="-1">Unknown</option></select>`).join("") +
+  `<span class="l">Includes:</span><span class="checks"><label><input type="checkbox" id="f-q">Test</label><label><input type="checkbox" id="f-a">Answers</label><label><input type="checkbox" id="f-s">Solutions</label></span>
+   <div class="actions"><button type="button" class="reset" id="f-reset">Clear</button><button class="go">Search</button></div>`);
+const form = document.getElementById("filters");
+form.onsubmit = e => { e.preventDefault(); ["year", ...F.map(f => f[0])].forEach(k => S[k] = document.getElementById("f-" + k).value);
+  ["q", "a", "s"].forEach(k => S[k] = document.getElementById("f-" + k).checked); S.page = 0; draw(); };
+document.getElementById("f-reset").onclick = () => { form.reset(); form.requestSubmit(); };
+
+function base(t) {
+  return [[t.year, v("month", t), v("comp", t)].filter(Boolean).join(" "), v("host", t), [v("div", t), v("type", t)].filter(Boolean).join(" ").replace(/\//g, "-")].filter(Boolean).join(" - ");
+}
+const fname = (t, d, ext) => `T${t.id} D${d.id} ${base(t)} - ${d.kind}.${ext}`;
+const link = (t, d, label) => `<a href="#" data-doc="${t.id}:${d.id}:pdf">${esc(label ?? d.kind)}</a>${!["pdf", "zip"].includes(d.ext) ? `<a href="#" class="orig" data-doc="${t.id}:${d.id}:${d.ext}">.${esc(d.ext)}</a>` : ""}`;
+const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`;
+const GROUPS = [["All documents", null], ["Tests", ["Test", "Condensed Test", "Combined Test+Solutions"]], ["Answers", ["Answers"]], ["Solutions", ["Solutions", "Combined Test+Solutions"]], ["Errata & other", ["Errata", "Other"]]];
+const FMT = { pdf: "PDF", orig: "Original", both: "Both" };
+const testsOf = scope => scope === "bulk" ? T.filter(t => S.sel.has(t.id)) : [T.find(t => t.id == scope)];
+const docsOf = (scope, g) => testsOf(scope).flatMap(t => t.docs.filter(d => !GROUPS[g][1] || GROUPS[g][1].includes(d.kind)).map(d => [t, d]));
+const zip = scope => {
+  const open = S.menu === String(scope);
+  const menu = open ? `<div class="menu" role="menu">${GROUPS.map((g, i) => [g, i, docsOf(scope, i).length]).filter(x => x[2]).map(([g, i, n]) =>
+    `<button role="menuitem" data-dl="${scope}:${i}">${g[0]}<span class="n">${n}</span></button>`).join("")}<hr>
+    <div class="fmt"><span>Format</span>${Object.entries(FMT).map(([k, l]) => `<button data-fmt="${k}" aria-pressed="${S.fmt === k}">${l}</button>`).join("")}</div></div>` : "";
+  return `<span class="split"><button data-dl="${scope}:0" aria-label="Download all documents" title="Download all (${FMT[S.fmt]})">${ICON}</button><button data-menu="${scope}" aria-haspopup="menu" aria-expanded="${open}" aria-label="Choose what to download">▾</button>${menu}</span>`;
+};
+const event = t => [v("month", t), v("comp", t)].filter(Boolean).join(" ") || null;
+
+const V = {
+  a: { name: "Documents in one cell", head: ["Year", "Event", "Host", "Division/Level", "Test type", "Documents", ""],
+    row: t => `${chk(t)}<td class="y mono">${t.year ?? "—"}</td><td data-l="Event">${u(event(t))}</td><td data-l="Host">${u(v("host", t))}</td><td data-l="Division/Level">${u(v("div", t))}</td><td data-l="Test type">${u(v("type", t))}</td>
+      <td class="wide"><div class="docs">${t.docs.map(d => `<span>${link(t, d)}</span>`).join("")}</div></td><td class="wide">${zip(t.id)}</td>` },
+  b: { name: "A column per kind", head: ["Year", "Event", "Host", "Division/Level", "Test type", "Test", "Answers", "Solutions", "Other", ""],
+    row: t => { const col = ks => { const ds = t.docs.filter(d => ks.includes(d.kind)); return ds.length ? ds.map(d => link(t, d, d.kind.startsWith("Condensed") ? "Condensed" : d.kind.startsWith("Combined") ? "Combined" : "PDF")).join("<br>") : `<span class="none">—</span>`; };
+      return `${chk(t)}<td class="y mono">${t.year ?? "—"}</td><td data-l="Event">${u(event(t))}</td><td data-l="Host">${u(v("host", t))}</td><td data-l="Division/Level">${u(v("div", t))}</td><td data-l="Test type">${u(v("type", t))}</td>
+      <td data-l="Test">${col(["Test", "Condensed Test", "Combined Test+Solutions"])}</td><td data-l="Answers">${col(["Answers"])}</td><td data-l="Solutions">${col(["Solutions"])}</td><td data-l="Other">${col(["Errata", "Other"])}</td><td class="wide">${zip(t.id)}</td>`; } } };
+const chk = t => `<td class="c"><input type="checkbox" data-sel="${t.id}" ${S.sel.has(t.id) ? "checked" : ""} aria-label="Select this test"></td>`;
+let cur = "a";
+
+function draw() {
+  const res = T.filter(t => F.every(([k]) => S[k] === "" || t[k] === +S[k]) && (!S.year || t.year === +S.year) && (!S.q || t.q) && (!S.a || t.a) && (!S.s || t.s));
+  const per = 50, pages = Math.max(1, Math.ceil(res.length / per)); S.page = Math.min(S.page, pages - 1);
+  document.getElementById("count").innerHTML = `<b>${res.length.toLocaleString()}</b> tests`;
+  const V0 = V[cur], page = res.slice(S.page * per, S.page * per + per), allOnPage = page.length && page.every(t => S.sel.has(t.id));
+  S.res = res;
+  document.getElementById("bulk").innerHTML = S.sel.size ? `<div class="bulk"><span><b>${S.sel.size}</b> selected</span>${zip("bulk")}
+    ${res.some(t => !S.sel.has(t.id)) ? `<button class="linkish" id="selall">Select all ${res.length.toLocaleString()} results</button>` : ""}<button class="linkish" id="selclear">Clear selection</button></div>` : "";
+  document.getElementById("results").innerHTML = res.length
+    ? `<div class="tbl"><table><thead><tr><th class="c"><input type="checkbox" id="selpage" ${allOnPage ? "checked" : ""} aria-label="Select all on this page"></th>${V0.head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${page.map(t => `<tr>${V0.row(t)}</tr>`).join("")}</tbody></table></div>
+       ${pages > 1 ? `<div class="pager"><span class="mono">${S.page + 1} / ${pages}</span><button id="pp" ${S.page ? "" : "disabled"}>Previous</button><button id="np" ${S.page < pages - 1 ? "" : "disabled"}>Next</button></div>` : ""}`
+    : `<div class="empty">No tests match. Clear a filter.</div>`;
+}
+let tt;
+const toast = html => { const el = document.getElementById("toast"); el.innerHTML = html; el.hidden = false; clearTimeout(tt); tt = setTimeout(() => el.hidden = true, 4500); };
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-doc],[data-dl],[data-menu],[data-fmt],#pp,#np,#selall,#selclear");
+  if (!el) { if (S.menu !== null && !e.target.closest(".menu")) { S.menu = null; draw(); } return; }
+  e.preventDefault();
+  if (el.id === "pp" || el.id === "np") { S.page += el.id === "np" ? 1 : -1; S.menu = null; draw(); scrollTo(0, 0); return; }
+  if (el.id === "selall") { S.res.forEach(t => S.sel.add(t.id)); draw(); return; }
+  if (el.id === "selclear") { S.sel.clear(); S.menu = null; draw(); return; }
+  if (el.dataset.menu) { S.menu = S.menu === el.dataset.menu ? null : el.dataset.menu; draw(); return; }
+  if (el.dataset.fmt) { S.fmt = el.dataset.fmt; draw(); return; }
+  if (el.dataset.doc) { const [tid, did, ext] = el.dataset.doc.split(":"), t = T.find(x => x.id == tid), d = t.docs.find(x => x.id == did); toast(`<span class="mono">${esc(fname(t, d, ext))}</span>`); return; }
+  const [scope, g] = el.dataset.dl.split(":"), docs = docsOf(scope, +g);
+  const files = docs.flatMap(([t, d]) => S.fmt === "orig" ? [d.ext] : S.fmt === "both" ? [...new Set(["pdf", d.ext])] : [d.ext === "zip" ? "zip" : "pdf"]).length;
+  const what = +g ? ` - ${GROUPS[+g][0]}` : "";
+  const name = scope === "bulk" ? `FAMAT Test Bank - ${S.sel.size} tests${what}.zip` : (() => { const t = testsOf(scope)[0]; return `T${t.id} ${base(t)}${what}.zip`; })();
+  S.menu = null; draw();
+  toast(`<span class="mono">${esc(name)}</span> (${files} ${FMT[S.fmt]} file${files === 1 ? "" : "s"}${scope === "bulk" ? ", one folder per test" : ""})`);
+});
+document.addEventListener("change", e => {
+  const el = e.target;
+  if (el.dataset.sel) { el.checked ? S.sel.add(+el.dataset.sel) : S.sel.delete(+el.dataset.sel); draw(); }
+  if (el.id === "selpage") { const per = 50; S.res.slice(S.page * per, S.page * per + per).forEach(t => el.checked ? S.sel.add(t.id) : S.sel.delete(t.id)); draw(); }
+});
+addEventListener("keydown", e => { if (e.key === "Escape" && S.menu !== null) { S.menu = null; draw(); } });
+draw();
+</script>
