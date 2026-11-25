@@ -25,7 +25,7 @@ async fn a_published_test_is_listed_in_the_server_rendered_html() {
     assert_eq!(text_in(row, ".test-type"), "Individual");
     assert_eq!(
         links_in(row),
-        vec![("Test".to_owned(), format!("/documents/{document}/pdf"))]
+        vec![("Test".to_owned(), format!("/tests/{test}/documents/{document}/pdf"))]
     );
 }
 

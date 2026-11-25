@@ -45,15 +45,24 @@ impl NewTest {
     }
 }
 
-/// A Document to insert, with a PDF Original.
+/// A Document to insert.
 #[derive(Clone, Debug)]
 pub struct NewDocument<'a> {
     /// A Document kind name, e.g. "Test" or "Solutions".
     pub kind: &'static str,
+    /// The optional short label, e.g. "2 per page".
+    pub label: Option<&'static str>,
     pub published: bool,
-    pub pdf: &'a [u8],
-    /// Whether to put the Original in Garage. `false` leaves the database
-    /// pointing at a missing object.
+    /// The Original's bytes, content type and extension (no dot, lower case).
+    pub original: &'a [u8],
+    pub content_type: &'static str,
+    pub extension: &'static str,
+    /// A PDF made from the Original, when the Original isn't one.
+    pub pdf: Option<&'a [u8]>,
+    /// "preparing", "ready", "failed" or "not_convertible".
+    pub pdf_status: &'static str,
+    /// Whether to put the files in Garage. `false` leaves the database
+    /// pointing at missing objects.
     pub stored: bool,
 }
 
@@ -62,9 +71,26 @@ impl<'a> NewDocument<'a> {
     pub fn pdf(kind: &'static str, pdf: &'a [u8]) -> Self {
         Self {
             kind,
+            label: None,
             published: true,
-            pdf,
+            original: pdf,
+            content_type: "application/pdf",
+            extension: "pdf",
+            pdf: None,
+            pdf_status: "ready",
             stored: true,
+        }
+    }
+
+    /// A Published Document of `kind` whose Original is a Word file, with the
+    /// PDF made from it once one is given (until then it is being prepared).
+    pub fn docx(kind: &'static str, docx: &'a [u8], pdf: Option<&'a [u8]>) -> Self {
+        Self {
+            content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            extension: "docx",
+            pdf,
+            pdf_status: if pdf.is_some() { "ready" } else { "preparing" },
+            ..Self::pdf(kind, docx)
         }
     }
 }
@@ -101,12 +127,14 @@ impl TestApp {
     /// Insert a Document belonging to `tests`. Returns its ID.
     pub async fn insert_document(&self, tests: &[i64], document: NewDocument<'_>) -> i64 {
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO documents (kind_id, published, pdf_status)
-             VALUES ((SELECT id FROM document_kinds WHERE name = $1), $2, 'ready')
+            "INSERT INTO documents (kind_id, label, published, pdf_status)
+             VALUES ((SELECT id FROM document_kinds WHERE name = $1), $2, $3, $4::pdf_status)
              RETURNING id",
         )
         .bind(document.kind)
+        .bind(document.label)
         .bind(document.published)
+        .bind(document.pdf_status)
         .fetch_one(&self.db)
         .await
         .expect("insert Document (is the kind name right?)");
@@ -118,28 +146,68 @@ impl TestApp {
                 .await
                 .expect("attach Document to Test");
         }
-        sqlx::query(
-            "INSERT INTO document_files (document_id, role, content_type, extension, byte_size, sha256)
-             VALUES ($1, 'original', 'application/pdf', 'pdf', $2, $3)",
-        )
-        .bind(id)
-        .bind(document.pdf.len() as i64)
-        .bind(Sha256::digest(document.pdf).to_vec())
-        .execute(&self.db)
-        .await
-        .expect("insert Document file");
-        if document.stored {
-            self.s3
-                .put_object()
-                .bucket(&self.bucket)
-                .key(self.document_key(id, "original"))
-                .content_type("application/pdf")
-                .body(document.pdf.to_vec().into())
-                .send()
-                .await
-                .expect("put the Original into Garage");
+        let mut files = vec![("original", document.content_type, document.extension, document.original)];
+        if let Some(pdf) = document.pdf {
+            files.push(("pdf", "application/pdf", "pdf", pdf));
+        }
+        for (role, content_type, extension, bytes) in files {
+            sqlx::query(
+                "INSERT INTO document_files (document_id, role, content_type, extension, byte_size, sha256)
+                 VALUES ($1, $2::file_role, $3, $4, $5, $6)",
+            )
+            .bind(id)
+            .bind(role)
+            .bind(content_type)
+            .bind(extension)
+            .bind(bytes.len() as i64)
+            .bind(Sha256::digest(bytes).to_vec())
+            .execute(&self.db)
+            .await
+            .expect("insert Document file");
+            if document.stored {
+                self.s3
+                    .put_object()
+                    .bucket(&self.bucket)
+                    .key(self.document_key(id, role))
+                    .content_type(content_type)
+                    .body(bytes.to_vec().into())
+                    .send()
+                    .await
+                    .expect("put the file into Garage");
+            }
         }
         id
+    }
+
+    /// Move a Test to Trash. It stays marked Published, so the Trash alone must
+    /// keep it out of sight.
+    pub async fn trash_test(&self, id: i64) {
+        sqlx::query("UPDATE tests SET trashed_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&self.db)
+            .await
+            .expect("trash Test");
+    }
+
+    /// Move a Document to Trash. It stays marked Published, so the Trash alone
+    /// must keep it out of sight.
+    pub async fn trash_document(&self, id: i64) {
+        sqlx::query("UPDATE documents SET trashed_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&self.db)
+            .await
+            .expect("trash Document");
+    }
+
+    /// Rename a Facet value, as an Admin's rename does.
+    pub async fn rename_facet_value(&self, facet: &str, from: &str, to: &str) {
+        sqlx::query("UPDATE facet_values SET name = $3 WHERE facet = $1::facet AND name = $2")
+            .bind(facet)
+            .bind(from)
+            .bind(to)
+            .execute(&self.db)
+            .await
+            .expect("rename Facet value");
     }
 
     /// The Garage key of one of this test's Document files.
@@ -192,8 +260,17 @@ impl TestApp {
 /// A PDF-looking file of about `len` bytes with varied content, so a
 /// truncated or reordered download cannot match by accident.
 pub fn sample_pdf(len: usize) -> Vec<u8> {
-    let mut bytes = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".to_vec();
-    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    sample_file(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n", len, 0x9e37_79b9_7f4a_7c15)
+}
+
+/// A Word-looking file of about `len` bytes, different from any `sample_pdf`.
+pub fn sample_docx(len: usize) -> Vec<u8> {
+    sample_file(b"PK\x03\x04", len, 0x2545_f491_4f6c_dd1d)
+}
+
+fn sample_file(magic: &[u8], len: usize, seed: u64) -> Vec<u8> {
+    let mut bytes = magic.to_vec();
+    let mut state = seed;
     while bytes.len() + 6 < len {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)

@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod documents;
+pub mod download_name;
 pub mod search;
 pub mod storage;
 
@@ -36,7 +37,10 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
     let state = AppState { db, storage };
 
     Ok(dioxus::server::router(app::App)
-        .route("/documents/{id}/pdf", get(documents::pdf))
+        .route("/tests/{test_id}/documents/{id}/pdf", get(documents::pdf))
+        .route("/tests/{test_id}/documents/{id}/original", get(documents::original))
+        .route("/documents/{id}/pdf", get(documents::pdf_of_first_test))
+        .route("/documents/{id}/original", get(documents::original_of_first_test))
         .route("/healthz", get(health))
         .layer(Extension(state)))
 }
