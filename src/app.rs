@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod add_test;
 mod admin;
+pub mod bulk_edit;
 pub mod document_kinds;
 pub mod facet_values;
 pub mod pdf;
@@ -17,9 +18,10 @@ pub mod test_edit;
 pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout, admin_session};
+use bulk_edit::{BULK_EDIT_PATH, BulkEdit};
 use document_kinds::DocumentKinds;
 use facet_values::FacetValues;
-use pdf::PdfProblems;
+use pdf::{PDF_PROBLEMS, PdfProblems};
 use test_edit::EditTest;
 
 use crate::download::{
@@ -40,6 +42,8 @@ enum Route {
     AddTest { added: String, pending: String, notice: String },
     #[route("/admin/tests/:id/edit")]
     EditTest { id: i64 },
+    #[route("/admin/tests/bulk")]
+    BulkEdit {},
     #[route("/admin/needs-review")]
     PdfProblems {},
     #[route("/admin/facets?:facet")]
@@ -138,6 +142,10 @@ a:hover { text-decoration: underline }
 .bulk { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; padding: 8px; margin-bottom: 8px;
   background: var(--head); border-radius: 6px; font-size: .9rem }
 .bulk .note { color: var(--muted) }
+.tag { display: inline-block; font-size: .72rem; line-height: 1.3; border: 1px solid var(--rule); border-radius: 4px;
+  padding: 0 5px; margin-left: 8px; color: var(--muted); vertical-align: middle; white-space: nowrap }
+.tag.review { border-color: #e0b44c; color: #7a5600; background: #fff8e6 }
+.admin-note { text-align: center; font-size: .85rem; color: var(--muted); margin: -4px 0 10px }
 .linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-weight: 500 }
 .linkish:hover { text-decoration: underline }
 /* Without JS the bar is as the page was loaded: once a tick changes, show it
@@ -210,6 +218,11 @@ pub struct TestRow {
     pub division_level: FacetValue,
     pub test_type: FacetValue,
     pub documents: Vec<DocumentLink>,
+    /// Admins only: the Test is Hidden. Its Documents can't be downloaded,
+    /// so they are listed without links.
+    pub hidden: bool,
+    /// Admins only: the Test, or one of its Documents, needs review.
+    pub needs_review: bool,
 }
 
 /// A search, as the query string states it. Facet fields hold the raw
@@ -228,6 +241,8 @@ pub struct SearchQuery {
     pub includes_solutions: bool,
     /// The download menus' Format switch, kept for the page (`format`).
     pub format: Format,
+    /// Admins only: just the Tests that need review (`needs_review`).
+    pub needs_review: bool,
 }
 
 /// The query-string value of a dropdown's **Unknown** option.
@@ -276,17 +291,28 @@ pub struct SelectedTest {
 }
 
 /// A page of Published Tests matching the search in the request's query
-/// string, in results order. Public: it never returns Hidden or Trashed
-/// Tests or Documents, so it needs no authorization.
+/// string, in results order. Public: for anyone else it never returns
+/// Hidden or Trashed Tests or Documents. Only for a logged-in Admin does it
+/// also return Hidden Tests and apply the Needs review filter.
 ///
 /// It reads the raw query string itself (during SSR, the page's), because
 /// the router decodes the query before splitting it, which loses `&`, `=`
 /// and `+` inside values.
 #[get("/api/tests",
+      headers: dioxus::fullstack::HeaderMap,
       state: dioxus::fullstack::extract::Extension<crate::server::AppState>,
       raw_query: dioxus::fullstack::extract::RawQuery)]
 pub async fn search_tests() -> Result<SearchResults, ServerFnError> {
-    crate::server::search::search(&state.db, raw_query.0.as_deref())
+    use crate::server::search::{Viewer, search};
+    let session = crate::server::auth::current_session(&state.db, &headers)
+        .await
+        .map_err(crate::server::internal_error)?;
+    let viewer = if session.is_some() {
+        Viewer::Admin
+    } else {
+        Viewer::Public
+    };
+    search(&state.db, raw_query.0.as_deref(), viewer)
         .await
         .map_err(crate::server::internal_error)
 }
@@ -363,6 +389,21 @@ fn Search() -> Element {
                     Include { value: "answers", label: "Answers", checked: query.includes_answers }
                     Include { value: "solutions", label: "Solutions", checked: query.includes_solutions }
                 }
+                if admin {
+                    span { class: "l", "Admin:" }
+                    span { class: "checks",
+                        label {
+                            input {
+                                r#type: "checkbox",
+                                id: "f-needs-review",
+                                name: "needs_review",
+                                value: "on",
+                                checked: query.needs_review,
+                            }
+                            "Needs review"
+                        }
+                    }
+                }
                 if format != Format::default() {
                     input { r#type: "hidden", name: "format", value: format.slug() }
                 }
@@ -379,6 +420,13 @@ fn Search() -> Element {
         p { id: "count", class: "count",
             b { "{total_text}" }
             if total == 1 { " test" } else { " tests" }
+        }
+        if query.needs_review {
+            p { id: "needs-review-note", class: "admin-note",
+                "Tests flagged Needs review, or with a flagged Document or a failed PDF. PDFs being prepared are on "
+                a { href: PDF_PROBLEMS, "PDF problems" }
+                "."
+            }
         }
         form {
             id: "picks",
@@ -397,6 +445,7 @@ fn Search() -> Element {
                 result_ids: results.result_ids.clone(),
                 clear: results.clear_selection.clone(),
                 page: results.page,
+                admin,
             }
             if results.tests.is_empty() {
                 div { class: "empty", "No tests match. Clear a filter." }
@@ -466,6 +515,7 @@ fn SearchFields(query: SearchQuery) -> Element {
         .filter(|(included, _)| *included)
         .map(|(_, value)| ("includes", value.to_owned())),
     )
+    .chain(query.needs_review.then(|| ("needs_review", "on".to_owned())))
     .collect();
     rsx! {
         for (name , value) in fields {
@@ -495,10 +545,15 @@ impl Selection {
 }
 
 impl SelectedTest {
+    /// A Hidden Test has nothing to download.
     fn of(test: &TestRow) -> Self {
         Self {
             id: test.id,
-            counts: GroupCounts::of(test.documents.iter().map(|d| d.contents)),
+            counts: if test.hidden {
+                GroupCounts::default()
+            } else {
+                GroupCounts::of(test.documents.iter().map(|d| d.contents))
+            },
         }
     }
 }
@@ -529,11 +584,14 @@ fn PagePick(rows: Vec<SelectedTest>) -> Element {
 
 /// Shown while anything is selected: "N selected", the split download
 /// button for the selection, Select all N results and Clear selection.
+/// An Admin also gets **Edit selected**, and **Merge…** when exactly two
+/// are selected: submit buttons that open the bulk edit page with the
+/// selection as it is ticked.
 ///
 /// Without JS the bar is as the page was loaded, so it also has an
 /// "Update selection" button, shown (by CSS) once a checkbox changes.
 #[component]
-fn BulkBar(total: i64, result_ids: Option<Vec<i64>>, clear: String, page: i64) -> Element {
+fn BulkBar(total: i64, result_ids: Option<Vec<i64>>, clear: String, page: i64, admin: bool) -> Element {
     let mut selection = use_context::<Selection>();
     let selected = selection.0.read().clone();
     let count = selected.len();
@@ -572,6 +630,29 @@ fn BulkBar(total: i64, result_ids: Option<Vec<i64>>, clear: String, page: i64) -
                 }
                 if capped {
                     span { class: "note", "Up to {MAX_BULK_TESTS} tests can be downloaded together." }
+                }
+                if admin {
+                    // `page` goes along, so the edit page links back to it.
+                    button {
+                        class: "linkish",
+                        id: "edit-selected",
+                        r#type: "submit",
+                        formaction: BULK_EDIT_PATH,
+                        name: "page",
+                        value: "{page}",
+                        "Edit selected"
+                    }
+                    if count == 2 {
+                        button {
+                            class: "linkish",
+                            id: "merge-selected",
+                            r#type: "submit",
+                            formaction: "{BULK_EDIT_PATH}#merge",
+                            name: "page",
+                            value: "{page}",
+                            "Merge…"
+                        }
+                    }
                 }
                 a {
                     class: "linkish",
@@ -671,7 +752,16 @@ fn Row(test: TestRow, admin: bool) -> Element {
             td { class: "test-type", "data-l": "Test type", Facet { value: test.test_type.clone() } }
             td { class: "documents wide",
                 div { class: "docs",
-                    for document in test.documents.iter() {
+                    if test.hidden {
+                        // Not downloadable while the Test is Hidden.
+                        for document in test.documents.iter() {
+                            span { key: "{document.id}", class: "document",
+                                "{document.kind}"
+                                if let Some(label) = &document.label { " ({label})" }
+                            }
+                        }
+                    }
+                    for document in test.documents.iter().filter(|_| !test.hidden) {
                         span { key: "{document.id}", class: "document",
                             a { href: "/tests/{test.id}/documents/{document.id}/pdf",
                                 "{document.kind}"
@@ -691,8 +781,14 @@ fn Row(test: TestRow, admin: bool) -> Element {
                 }
             }
             td { class: "download wide",
-                if !test.documents.is_empty() {
+                if !test.documents.is_empty() && !test.hidden {
                     DownloadButton { target: Target::Test(test.id), counts: picked.counts }
+                }
+                if test.hidden {
+                    span { class: "tag hidden", "Hidden" }
+                }
+                if test.needs_review {
+                    span { class: "tag review", "Needs review" }
                 }
                 if admin {
                     a {

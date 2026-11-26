@@ -2,6 +2,7 @@
 
 pub mod add_test;
 pub mod auth;
+pub mod bulk_edit;
 pub mod change_log;
 pub mod cli;
 pub mod config;

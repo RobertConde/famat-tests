@@ -35,7 +35,7 @@ Who assigned a Document's kind and its Test's facet values: the student catalogu
 _Avoid_: Provenance, author
 
 **Needs review**:
-A flag on a Document whose labels an Admin should check, with a free-text comment saying why.
+A flag on a Test or Document whose labels an Admin should check, with a free-text comment saying why. A Document whose PDF failed is flagged too.
 _Avoid_: Unverified, pending
 
 **Original**:

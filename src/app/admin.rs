@@ -129,7 +129,7 @@ const MENU: [(&str, &str); 7] = [
     ("Add test", "/admin/tests/new"),
     ("Facet values", "/admin/facets"),
     ("Document kinds", "/admin/document-kinds"),
-    ("Needs review", "/admin/needs-review"),
+    ("Needs review", "/?needs_review=on"),
     ("Trash", "/admin/trash"),
     ("Change log", "/admin/change-log"),
     ("Log out", "/logout"),
