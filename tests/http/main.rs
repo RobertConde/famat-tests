@@ -19,4 +19,5 @@ mod old_urls;
 mod pdf_conversion;
 mod pdf_queue;
 mod search_page;
+mod test_edit;
 mod zips;

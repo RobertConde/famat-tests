@@ -41,12 +41,28 @@ impl Page {
             element,
             selects: Vec::new(),
             checks: Vec::new(),
+            fills: Vec::new(),
+            submitter: None,
+        }
+    }
+
+    /// The one urlencoded POST form matching a CSS selector, ready to fill
+    /// in and send with [`Form::fields`].
+    pub fn post_form(&self, css: &str) -> Form<'_> {
+        let element = self.one(css);
+        let method = element.value().attr("method").unwrap_or("get");
+        assert!(method.eq_ignore_ascii_case("post"), "{css} is not a POST form");
+        Form {
+            element,
+            selects: Vec::new(),
+            checks: Vec::new(),
+            fills: Vec::new(),
             submitter: None,
         }
     }
 }
 
-/// A GET form being filled in, submitted the way a browser with JavaScript
+/// A form being filled in, submitted the way a browser with JavaScript
 /// off does it: every named control in document order, unticked checkboxes
 /// left out, encoded as `application/x-www-form-urlencoded`. Only the
 /// pressed submit button (if any) is sent, and its `formaction` wins.
@@ -54,6 +70,8 @@ pub struct Form<'a> {
     element: ElementRef<'a>,
     selects: Vec<(String, String)>,
     checks: Vec<(String, String, bool)>,
+    /// Text typed into inputs and textareas, by name.
+    fills: Vec<(String, String)>,
     submitter: Option<ElementRef<'a>>,
 }
 
@@ -90,15 +108,46 @@ impl<'a> Form<'a> {
         self
     }
 
-    /// The path and query string the browser would GET.
-    pub fn submit_url(&self) -> String {
-        let action = self
-            .submitter
+    /// Type `value` into the text input or textarea `name`.
+    pub fn fill(mut self, name: &str, value: &str) -> Self {
+        let css = format!("input[name={name:?}], textarea[name={name:?}]");
+        let selector = Selector::parse(&css).unwrap();
+        assert!(
+            self.element.select(&selector).next().is_some(),
+            "the form has no {name} field"
+        );
+        self.fills.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Where the form goes: the pressed button's `formaction`, else the
+    /// form's `action`.
+    pub fn action(&self) -> String {
+        self.submitter
             .and_then(|button| button.value().attr("formaction"))
             .or(self.element.value().attr("action"))
-            .unwrap_or("");
-        let mut url = reqwest::Url::parse("http://famat.test/").unwrap().join(action).unwrap();
-        let controls = Selector::parse("select[name], input[name], button[name]").unwrap();
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    /// The path and query string the browser would GET.
+    pub fn submit_url(&self) -> String {
+        let action = self.action();
+        let mut url = reqwest::Url::parse("http://famat.test/")
+            .unwrap()
+            .join(&action)
+            .unwrap();
+        let pairs = self.fields();
+        url.query_pairs_mut().clear().extend_pairs(&pairs);
+        match url.query() {
+            Some(query) if !query.is_empty() => format!("{}?{query}", url.path()),
+            _ => url.path().to_owned(),
+        }
+    }
+
+    /// The `(name, value)` pairs the browser would send, in document order.
+    pub fn fields(&self) -> Vec<(String, String)> {
+        let controls = Selector::parse("select[name], input[name], button[name], textarea[name]").unwrap();
         let options = Selector::parse("option").unwrap();
         let mut pairs = Vec::new();
         for control in self.element.select(&controls) {
@@ -126,6 +175,11 @@ impl<'a> Form<'a> {
                 pairs.push((name.to_owned(), value_of(chosen)));
                 continue;
             }
+            let filled = self.fills.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+            if control.value().name() == "textarea" {
+                pairs.push((name.to_owned(), filled.unwrap_or_else(|| control.text().collect())));
+                continue;
+            }
             let value = control.value().attr("value").unwrap_or("");
             match control.value().attr("type").unwrap_or("text") {
                 "checkbox" | "radio" => {
@@ -139,7 +193,7 @@ impl<'a> Form<'a> {
                     }
                 }
                 "submit" | "button" | "reset" | "image" | "file" => {}
-                _ => pairs.push((name.to_owned(), value.to_owned())),
+                _ => pairs.push((name.to_owned(), filled.unwrap_or_else(|| value.to_owned()))),
             }
         }
         for (name, value, _) in &self.checks {
@@ -150,11 +204,7 @@ impl<'a> Form<'a> {
                 "the form has no {name}={value} checkbox"
             );
         }
-        url.query_pairs_mut().clear().extend_pairs(&pairs);
-        match url.query() {
-            Some(query) if !query.is_empty() => format!("{}?{query}", url.path()),
-            _ => url.path().to_owned(),
-        }
+        pairs
     }
 }
 

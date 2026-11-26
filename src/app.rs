@@ -5,7 +5,7 @@
 
 use std::{collections::HashSet, rc::Rc};
 
-use dioxus::prelude::*;
+use dioxus::{fullstack::Loading, prelude::*};
 use serde::{Deserialize, Serialize};
 
 pub mod add_test;
@@ -13,12 +13,14 @@ mod admin;
 pub mod document_kinds;
 pub mod facet_values;
 pub mod pdf;
+pub mod test_edit;
 pub mod upload_rules;
 use add_test::AddTest;
-use admin::{AdminMenu, Login, Logout};
+use admin::{AdminMenu, Login, Logout, admin_session};
 use document_kinds::DocumentKinds;
 use facet_values::FacetValues;
 use pdf::PdfProblems;
+use test_edit::EditTest;
 
 use crate::download::{
     BULK_ZIP_PATH, Contents, Format, GroupCounts, KindGroup, MAX_BULK_TESTS, selection_value, zip_href,
@@ -36,6 +38,8 @@ enum Route {
     Logout {},
     #[route("/admin/tests/new?:added&:pending&:notice")]
     AddTest { added: String, pending: String, notice: String },
+    #[route("/admin/tests/:id/edit")]
+    EditTest { id: i64 },
     #[route("/admin/needs-review")]
     PdfProblems {},
     #[route("/admin/facets?:facet")]
@@ -100,6 +104,7 @@ tr:last-child td { border-bottom: 0 }
 .u { color: var(--faint) }
 .docs { display: grid; gap: 2px }
 a.original { font-weight: 400; font-size: .8rem; color: var(--muted); margin-left: 6px }
+a.edit { font-size: .85rem; margin-left: 8px; vertical-align: middle }
 a { color: var(--accent); text-decoration: none; font-weight: 500 }
 a:hover { text-decoration: underline }
 .split { position: relative; display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper) }
@@ -299,6 +304,12 @@ pub async fn search_tests() -> Result<SearchResults, ServerFnError> {
 fn Search() -> Element {
     let results = use_loader(search_tests)?;
     let results = results.read();
+    // Admins get an Edit link on each row; everyone else never sees one.
+    let admin = match use_loader(admin_session) {
+        Ok(_) => true,
+        Err(Loading::Pending(pending)) => return Err(Loading::Pending(pending).into()),
+        Err(Loading::Failed(_)) => false,
+    };
     let SearchResults { query, options, .. } = &*results;
     let years: Vec<String> = options.years.iter().map(i16::to_string).collect();
     let total = results.total;
@@ -406,7 +417,7 @@ fn Search() -> Element {
                         }
                         tbody {
                             for test in results.tests.iter() {
-                                Row { key: "{test.id}", test: test.clone() }
+                                Row { key: "{test.id}", test: test.clone(), admin }
                             }
                         }
                     }
@@ -625,9 +636,10 @@ fn PageButton(page: Option<i64>, id: &'static str, label: &'static str) -> Eleme
     }
 }
 
-/// A result row. Cells carry labels for the stacked layout on phones.
+/// A result row. Cells carry labels for the stacked layout on phones. An
+/// Admin also gets the row's **Edit** link.
 #[component]
-fn Row(test: TestRow) -> Element {
+fn Row(test: TestRow, admin: bool) -> Element {
     let mut selection = use_context::<Selection>();
     let picked = SelectedTest::of(&test);
     rsx! {
@@ -681,6 +693,14 @@ fn Row(test: TestRow) -> Element {
             td { class: "download wide",
                 if !test.documents.is_empty() {
                     DownloadButton { target: Target::Test(test.id), counts: picked.counts }
+                }
+                if admin {
+                    a {
+                        class: "edit",
+                        href: "/admin/tests/{test.id}/edit",
+                        aria_label: "Edit T{test.id}",
+                        "Edit"
+                    }
                 }
             }
         }

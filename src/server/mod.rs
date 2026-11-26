@@ -15,6 +15,7 @@ pub mod legacy;
 pub mod pdf;
 pub mod search;
 pub mod storage;
+pub mod test_edit;
 pub mod zip;
 
 use axum::{
