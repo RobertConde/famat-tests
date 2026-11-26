@@ -86,6 +86,8 @@ aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 reqwest = { version = "0.12", default-features = false, features = ["multipart", "stream"] }
 futures-util = { version = "0.3", default-features = false }
 scraper = "0.29"
+# Reads server functions' JSON, e.g. what Add test's kind dropdowns list.
+serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Reads the zips the server streams, independently of async_zip. Stored only.

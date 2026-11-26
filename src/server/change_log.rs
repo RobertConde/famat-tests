@@ -26,7 +26,6 @@
 use sqlx::{Postgres, Transaction};
 
 /// What kind of record changed.
-#[allow(dead_code, reason = "DocumentKind is for the Document kinds page (#29)")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entity {
     Test,
