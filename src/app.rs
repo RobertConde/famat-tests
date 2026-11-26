@@ -8,7 +8,10 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+pub mod add_test;
 mod admin;
+pub mod upload_rules;
+use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout};
 
 use crate::download::{Contents, Format, KindGroup, zip_href};
@@ -23,6 +26,8 @@ enum Route {
     Login { error: String },
     #[route("/logout")]
     Logout {},
+    #[route("/admin/tests/new?:added&:pending&:notice")]
+    AddTest { added: String, pending: String, notice: String },
 }
 
 #[component]

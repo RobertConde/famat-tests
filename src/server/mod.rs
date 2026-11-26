@@ -1,6 +1,8 @@
 //! Server-only code: compiled with `--features server`, never into WASM.
 
+pub mod add_test;
 pub mod auth;
+pub mod change_log;
 pub mod cli;
 pub mod config;
 pub mod db;

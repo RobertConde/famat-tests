@@ -284,7 +284,7 @@ main{{max-width:64rem;margin:0 auto;padding:1rem}}</style></head>\
     ([(header::CACHE_CONTROL, "no-store")], Html(page)).into_response()
 }
 
-fn escape_html(text: &str) -> String {
+pub(super) fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

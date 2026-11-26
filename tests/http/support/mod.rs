@@ -17,6 +17,7 @@
 //!   built, e.g. a `dx bundle` output with its `public/` directory beside it.
 //! - `FAMAT_TEST_KEEP=1`: keep each test's database, objects and server log.
 
+pub mod add_test;
 pub mod admin;
 pub mod download;
 pub mod fixtures;
