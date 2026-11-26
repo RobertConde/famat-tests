@@ -39,7 +39,7 @@ enum Route {
     #[route("/admin/tests/new?:added&:pending&:notice")]
     AddTest { added: String, pending: String, notice: String },
     #[route("/admin/tests/:id/edit")]
-    EditTest { id: String },
+    EditTest { id: i64 },
     #[route("/admin/needs-review")]
     PdfProblems {},
     #[route("/admin/facets?:facet")]

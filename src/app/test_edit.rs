@@ -137,12 +137,12 @@ pub struct DocumentTestsForm {
 }
 
 /// The page's data. An Admin endpoint: anonymous callers get 401. `id` is
-/// the page's path segment (`12` or `T12`).
+/// the Test's ID, the page's path segment.
 #[get("/api/admin/test-edit?id",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-pub async fn test_edit_page(id: String) -> Result<TestEditPage, ServerFnError> {
-    crate::server::test_edit::page(&state, &headers, &id).await
+pub async fn test_edit_page(id: i64) -> Result<TestEditPage, ServerFnError> {
+    crate::server::test_edit::page(&state, &headers, id).await
 }
 
 /// `POST /api/admin/tests/edit`: save the Test's Facet values,
@@ -230,7 +230,7 @@ pub fn edit_path(test: i64) -> String {
 
 /// `/admin/tests/{id}/edit`.
 #[component]
-pub fn EditTest(id: ReadSignal<String>) -> Element {
+pub fn EditTest(id: ReadSignal<i64>) -> Element {
     let page = match use_loader(move || test_edit_page(id())) {
         Ok(page) => page,
         Err(Loading::Pending(pending)) => return Err(Loading::Pending(pending).into()),
@@ -246,7 +246,7 @@ pub fn EditTest(id: ReadSignal<String>) -> Element {
         return rsx! {
             AdminMenu {}
             h2 { "Edit test" }
-            p { id: "no-test", "There is no Test {id}, or it is in the Trash." }
+            p { id: "no-test", "There is no Test T{id}, or it is in the Trash." }
         };
     };
     let csrf = page.csrf.clone();

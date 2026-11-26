@@ -94,14 +94,11 @@ fn visibility(posted: &str, test: Option<i64>) -> Result<bool, Refusal> {
 
 // -------------------------------------------------------------------- page
 
-pub async fn page(state: &AppState, headers: &HeaderMap, id: &str) -> Result<TestEditPage, ServerFnError> {
+pub async fn page(state: &AppState, headers: &HeaderMap, id: i64) -> Result<TestEditPage, ServerFnError> {
     let session = auth::require_admin(state, headers).await?;
     let csrf = auth::csrf_token(&state.csrf_key, Some(&session));
     let kinds = add_test::document_kinds(&state.db).await.map_err(internal_error)?;
-    let test = match parse_id(id) {
-        Some(id) => edited_test(&state.db, id).await.map_err(internal_error)?,
-        None => None,
-    };
+    let test = edited_test(&state.db, id).await.map_err(internal_error)?;
     Ok(TestEditPage { csrf, test, kinds })
 }
 
