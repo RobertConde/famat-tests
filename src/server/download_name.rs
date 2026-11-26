@@ -3,6 +3,8 @@
 //!
 //! - **Document:** `T{test id} D{doc id} {Year} {Month} {Competition} - {Host} - {Division/Level} {Test type} - {Document kind}[ ({label})].{ext}`
 //! - **Per-Test zip:** `T{test id} {Year} {Month} {Competition} - {Host} - {Division/Level} {Test type}[ - {Kind group}].zip`
+//! - **Bulk zip:** `FAMAT Test Bank - {N} tests[ - {Kind group}].zip`, with
+//!   each Test's files in a folder named like its own zip of all Documents.
 //!
 //! - Unknown and not-applicable parts are left out, with their separators.
 //! - Test type parentheses are dropped, and `/` becomes `-`.
@@ -54,6 +56,25 @@ pub fn file_name(parts: &NameParts<'_>, extension: &str) -> String {
 /// label, or `None` for all of them.
 pub fn zip_name(test: &TestParts<'_>, group: Option<&str>) -> String {
     capped(Name::new(format!("T{}", test.test_id), test, group, None), "zip")
+}
+
+/// The folder a Test's files go in inside a bulk zip: its zip's name for all
+/// Documents, without `.zip`.
+pub fn folder_name(test: &TestParts<'_>) -> String {
+    capped(Name::new(format!("T{}", test.test_id), test, None, None), "")
+}
+
+/// The name of a bulk zip of `tests` Tests. `group` is as for [`zip_name`].
+pub fn bulk_zip_name(tests: usize, group: Option<&str>) -> String {
+    let tests = if tests == 1 {
+        "1 test".to_owned()
+    } else {
+        format!("{tests} tests")
+    };
+    match group {
+        Some(group) => format!("FAMAT Test Bank - {tests} - {group}.zip"),
+        None => format!("FAMAT Test Bank - {tests}.zip"),
+    }
 }
 
 /// The name shortened to the cap, with its extension.

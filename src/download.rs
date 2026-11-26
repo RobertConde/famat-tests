@@ -7,6 +7,9 @@
 //!   Combined Test+Solutions is in both Tests and Solutions.
 //! - **Formats:** PDF (falling back to the Original when there is no ready
 //!   PDF, e.g. for a ZIP), Original, or Both.
+//! - **Bulk zips** hold several Tests, one folder each: a GET to
+//!   [`BULK_ZIP_PATH`] with the selection in `sel` (see [`selection_value`]),
+//!   at most [`MAX_BULK_TESTS`] of them.
 
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +77,39 @@ impl KindGroup {
     }
 }
 
+/// How many Documents fall in each kind group, for a menu's counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupCounts([u32; 5]);
+
+impl GroupCounts {
+    /// The counts of Documents whose kinds contain `contents`.
+    pub fn of(contents: impl IntoIterator<Item = Contents>) -> Self {
+        let mut counts = Self::default();
+        for contents in contents {
+            for (count, group) in counts.0.iter_mut().zip(KindGroup::MENU) {
+                if group.includes(contents) {
+                    *count += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// Both counts added up.
+    pub fn plus(self, other: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] + other.0[i]))
+    }
+
+    /// The non-empty groups with their counts, in menu order.
+    pub fn menu(self) -> Vec<(KindGroup, u32)> {
+        KindGroup::MENU
+            .into_iter()
+            .zip(self.0)
+            .filter(|(_, count)| *count > 0)
+            .collect()
+    }
+}
+
 /// Which of each Document's files to download.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -129,4 +165,30 @@ pub fn zip_href(test_id: i64, group: KindGroup, format: Format) -> String {
     } else {
         format!("/tests/{test_id}/zip?{}", params.join("&"))
     }
+}
+
+/// The bulk zip of several Tests:
+/// `GET /tests/zip?sel=…[&group=…][&format=…]`.
+pub const BULK_ZIP_PATH: &str = "/tests/zip";
+
+/// The most Tests one bulk zip may hold.
+pub const MAX_BULK_TESTS: usize = 500;
+
+/// Test IDs as one `sel` query-string value, e.g. `12,34,56`. The search
+/// page and the bulk zip split every `sel` value on commas, so a selection
+/// can come as one value, as one `sel` per checkbox, or both.
+pub fn selection_value(ids: impl IntoIterator<Item = i64>) -> String {
+    ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")
+}
+
+/// The Test IDs in a `sel` value, or `None` if any part is not an ID.
+/// Empty parts are skipped.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn parse_selection(value: &str) -> Option<Vec<i64>> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse().ok().filter(|id: &i64| *id > 0))
+        .collect()
 }

@@ -47,6 +47,7 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
         .route("/tests/{test_id}/documents/{id}/pdf", get(documents::pdf))
         .route("/tests/{test_id}/documents/{id}/original", get(documents::original))
         .route("/tests/{test_id}/zip", get(zip::test_zip))
+        .route("/tests/zip", get(zip::bulk_zip))
         .route("/documents/{id}/pdf", get(documents::pdf_of_first_test))
         .route("/documents/{id}/original", get(documents::original_of_first_test))
         .route("/healthz", get(health))

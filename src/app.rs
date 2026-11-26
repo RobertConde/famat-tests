@@ -3,7 +3,7 @@
 //! Everything here compiles for both targets; server-only code lives in
 //! `crate::server` and is only referenced from server-function bodies.
 
-use std::rc::Rc;
+use std::{collections::HashSet, rc::Rc};
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,9 @@ pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout};
 
-use crate::download::{Contents, Format, KindGroup, zip_href};
+use crate::download::{
+    BULK_ZIP_PATH, Contents, Format, GroupCounts, KindGroup, MAX_BULK_TESTS, selection_value, zip_href,
+};
 
 #[derive(Routable, Clone, Debug, PartialEq)]
 #[rustfmt::skip]
@@ -89,20 +91,22 @@ a.original { font-weight: 400; font-size: .8rem; color: var(--muted); margin-lef
 a { color: var(--accent); text-decoration: none; font-weight: 500 }
 a:hover { text-decoration: underline }
 .split { position: relative; display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper) }
-.split > a, .split summary { padding: 4px 8px; cursor: pointer; color: var(--ink); font-weight: 400; display: inline-flex;
+.split > a, .split > button, .split summary { padding: 4px 8px; cursor: pointer; color: var(--ink); font-weight: 400; display: inline-flex;
   align-items: center; border-radius: 5px }
-.split > a { border-radius: 5px 0 0 5px }
+.split > a, .split > button { border-radius: 5px 0 0 5px }
+.split > button { border: 0; background: none }
 .split details { display: flex }
 .split summary { list-style: none; border-left: 1px solid var(--rule); padding: 4px 6px; color: var(--muted); border-radius: 0 5px 5px 0 }
 .split summary::-webkit-details-marker { display: none }
-.split > a:hover, .split summary:hover { background: var(--head); text-decoration: none }
+.split > a:hover, .split > button:hover, .split summary:hover { background: var(--head); text-decoration: none }
 .split svg { width: 16px; height: 16px }
 .scrim { position: fixed; inset: 0; z-index: 19 }
 .menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 210px; background: var(--paper);
   border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 24px rgb(15 23 42 / .14); padding: 4px; display: grid; text-align: left }
-.menu > a { padding: 6px 10px; border-radius: 5px; display: flex; justify-content: space-between; gap: 16px; font-size: .9rem;
+.menu > a, .menu > button { padding: 6px 10px; border-radius: 5px; display: flex; justify-content: space-between; gap: 16px; font-size: .9rem;
   color: var(--ink); font-weight: 400 }
-.menu > a:hover, .menu > a:focus-visible { background: var(--head); text-decoration: none }
+.menu > button { border: 0; background: none; cursor: pointer; text-align: left }
+.menu > a:hover, .menu > a:focus-visible, .menu > button:hover, .menu > button:focus-visible { background: var(--head); text-decoration: none }
 .menu .n { color: var(--muted); font-variant-numeric: tabular-nums }
 .menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 0 }
 .menu .fmt { display: flex; gap: 2px; padding: 4px 6px; align-items: center; font-size: .8rem; color: var(--muted) }
@@ -111,9 +115,20 @@ a:hover { text-decoration: underline }
 .menu .fmt a:hover { background: var(--head); text-decoration: none }
 .menu .fmt a[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600 }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding-block: 10px; font-size: .85rem }
-.pager a, .pager .off { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 3px 10px;
-  color: var(--ink); font-weight: 400 }
-.pager a:hover { background: var(--head); text-decoration: none }
+.pager button, .pager .off { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 3px 10px;
+  color: var(--ink); font-weight: 400; cursor: pointer }
+.pager button:hover { background: var(--head) }
+.bulk { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; padding: 8px; margin-bottom: 8px;
+  background: var(--head); border-radius: 6px; font-size: .9rem }
+.bulk .note { color: var(--muted) }
+.linkish { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-weight: 500 }
+.linkish:hover { text-decoration: underline }
+/* Without JS the bar is as the page was loaded: once a tick changes, show it
+   (if hidden) with its Update selection button. */
+.bulk.none, .bulk .update { display: none }
+#picks:not(.live):has(input.pick:checked:not([checked]), input.pick[checked]:not(:checked), #pickpage:checked:not([checked])) .bulk { display: flex }
+#picks:not(.live):has(input.pick:checked:not([checked]), input.pick[checked]:not(:checked), #pickpage:checked:not([checked])) .bulk .update { display: inline }
+th.pick, td.pick { width: 1%; padding-right: 0 }
 .pager .off { color: var(--faint) }
 .empty { padding: 28px; text-align: center; color: var(--muted) }
 .credit { text-align: center; color: var(--muted); font-size: .85rem; padding-block: 28px 8px; border-top: 1px solid var(--rule); margin-top: 24px }
@@ -126,6 +141,8 @@ a:hover { text-decoration: underline }
   td[data-l]::before { content: attr(data-l) ": "; color: var(--muted); font-size: .8rem }
   td.year { grid-row: span 2; font-weight: 600 }
   td.wide { grid-column: 1 / -1 }
+  tr { position: relative }
+  td.pick { position: absolute; right: 0; top: 10px }
   .menu { right: auto; left: 0 }
 }
 "#;
@@ -221,12 +238,24 @@ pub struct SearchResults {
     /// 1-based; always within `1..=pages`.
     pub page: i64,
     pub pages: i64,
-    /// Links to the neighbouring pages of the same search.
-    pub previous: Option<String>,
-    pub next: Option<String>,
     /// This page under each Format, for the Format switch without JS.
     pub format_links: Vec<(Format, String)>,
+    /// This page with nothing selected.
+    pub clear_selection: String,
     pub tests: Vec<TestRow>,
+    /// Every matching Test, when they would fit in one bulk zip
+    /// ([`MAX_BULK_TESTS`]), so the page can tell whether all are selected.
+    pub result_ids: Option<Vec<i64>>,
+    /// The selected Tests that are Published and untrashed, on any page.
+    pub selection: Vec<SelectedTest>,
+}
+
+/// A Test selected for a bulk download, with its Documents' counts for the
+/// bulk download menu.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SelectedTest {
+    pub id: i64,
+    pub counts: GroupCounts,
 }
 
 /// A page of Published Tests matching the search in the request's query
@@ -245,8 +274,15 @@ pub async fn search_tests() -> Result<SearchResults, ServerFnError> {
         .map_err(crate::server::internal_error)
 }
 
-/// The search page. The form is a plain GET form and the pager plain links,
-/// so every search is a server-rendered page load and works without JS.
+/// The search page. The search form is a plain GET form, so every search
+/// is a server-rendered page load and works without JS.
+///
+/// The results, the bulk bar and the pager are one more GET form,
+/// `#picks`, carrying the search and the selection: each row's checkbox is a
+/// `sel` field, and Tests selected on other pages are a hidden one. Paging,
+/// Select all and the bulk downloads are its submit buttons, so ticks
+/// travel with them without JS. Hydrated, the selection is a signal: the
+/// bulk bar follows each tick at once.
 #[component]
 fn Search() -> Element {
     let results = use_loader(search_tests)?;
@@ -256,10 +292,21 @@ fn Search() -> Element {
     let total = results.total;
     let total_text = thousands(total);
     let format = query.format;
+    let chosen = use_signal(|| format);
     use_context_provider(|| DownloadFormat {
-        chosen: Signal::new(format),
+        chosen,
         links: results.format_links.clone(),
     });
+    let selection = use_signal(|| results.selection.clone());
+    use_context_provider(|| Selection(selection));
+    let mut live = use_signal(|| false);
+    use_effect(move || live.set(true));
+
+    let page_ids: Vec<i64> = results.tests.iter().map(|t| t.id).collect();
+    let selected_ids: Vec<i64> = selection.read().iter().map(|t| t.id).collect();
+    let off_page = selection_value(selected_ids.iter().copied().filter(|id| !page_ids.contains(id)));
+    let all_selected = selection_value(selected_ids);
+    let page_rows: Vec<SelectedTest> = results.tests.iter().map(SelectedTest::of).collect();
 
     rsx! {
         AdminMenu {}
@@ -296,6 +343,10 @@ fn Search() -> Element {
                 if format != Format::default() {
                     input { r#type: "hidden", name: "format", value: format.slug() }
                 }
+                // A new search keeps the selection.
+                if !all_selected.is_empty() {
+                    input { r#type: "hidden", name: "sel", value: "{all_selected}" }
+                }
                 div { class: "actions",
                     a { class: "reset", href: "/", "Clear" }
                     button { class: "go", r#type: "submit", "Search" }
@@ -306,35 +357,216 @@ fn Search() -> Element {
             b { "{total_text}" }
             if total == 1 { " test" } else { " tests" }
         }
-        if results.tests.is_empty() {
-            div { class: "empty", "No tests match. Clear a filter." }
-        } else {
-            div { class: "tbl",
-                table { id: "results",
-                    thead {
-                        tr {
-                            th { "Year" }
-                            th { "Event" }
-                            th { "Host" }
-                            th { "Division/Level" }
-                            th { "Test type" }
-                            th { "Documents" }
-                            th { span { class: "sr", "Download" } }
+        form {
+            id: "picks",
+            class: if live() { "live" } else { "" },
+            method: "get",
+            action: "/",
+            SearchFields { query: query.clone() }
+            if chosen() != Format::default() {
+                input { r#type: "hidden", name: "format", value: chosen().slug() }
+            }
+            if !off_page.is_empty() {
+                input { r#type: "hidden", name: "sel", value: "{off_page}" }
+            }
+            BulkBar {
+                total,
+                result_ids: results.result_ids.clone(),
+                clear: results.clear_selection.clone(),
+                page: results.page,
+            }
+            if results.tests.is_empty() {
+                div { class: "empty", "No tests match. Clear a filter." }
+            } else {
+                div { class: "tbl",
+                    table { id: "results",
+                        thead {
+                            tr {
+                                th { class: "pick", PagePick { rows: page_rows } }
+                                th { "Year" }
+                                th { "Event" }
+                                th { "Host" }
+                                th { "Division/Level" }
+                                th { "Test type" }
+                                th { "Documents" }
+                                th { span { class: "sr", "Download" } }
+                            }
                         }
-                    }
-                    tbody {
-                        for test in results.tests.iter() {
-                            Row { key: "{test.id}", test: test.clone() }
+                        tbody {
+                            for test in results.tests.iter() {
+                                Row { key: "{test.id}", test: test.clone() }
+                            }
                         }
                     }
                 }
             }
+            if results.pages > 1 {
+                nav { class: "pager", aria_label: "Pages",
+                    span { class: "mono", id: "page", "{results.page} / {results.pages}" }
+                    PageButton {
+                        page: (results.page > 1).then(|| results.page - 1),
+                        id: "prev",
+                        label: "Previous",
+                    }
+                    PageButton {
+                        page: (results.page < results.pages).then(|| results.page + 1),
+                        id: "next",
+                        label: "Next",
+                    }
+                }
+            }
         }
-        if results.pages > 1 {
-            nav { class: "pager", aria_label: "Pages",
-                span { class: "mono", id: "page", "{results.page} / {results.pages}" }
-                PageLink { href: results.previous.clone(), rel: "prev", label: "Previous" }
-                PageLink { href: results.next.clone(), rel: "next", label: "Next" }
+    }
+}
+
+/// The search as hidden fields of the selection form, so its submit
+/// buttons keep it.
+#[component]
+fn SearchFields(query: SearchQuery) -> Element {
+    let fields: Vec<(&'static str, String)> = [
+        ("year", query.year),
+        ("month", query.month),
+        ("competition", query.competition),
+        ("division_level", query.division_level),
+        ("test_type", query.test_type),
+        ("host", query.host),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .chain(
+        [
+            (query.includes_test, "test"),
+            (query.includes_answers, "answers"),
+            (query.includes_solutions, "solutions"),
+        ]
+        .into_iter()
+        .filter(|(included, _)| *included)
+        .map(|(_, value)| ("includes", value.to_owned())),
+    )
+    .collect();
+    rsx! {
+        for (name , value) in fields {
+            input { r#type: "hidden", name, value }
+        }
+    }
+}
+
+/// The Tests selected for a bulk download, shared by the rows, the page
+/// checkbox and the bulk bar.
+#[derive(Clone, Copy)]
+struct Selection(Signal<Vec<SelectedTest>>);
+
+impl Selection {
+    fn contains(&self, id: i64) -> bool {
+        self.0.read().iter().any(|t| t.id == id)
+    }
+
+    /// Select or deselect a Test.
+    fn set(&mut self, test: SelectedTest, selected: bool) {
+        let mut tests = self.0.write();
+        tests.retain(|t| t.id != test.id);
+        if selected {
+            tests.push(test);
+        }
+    }
+}
+
+impl SelectedTest {
+    fn of(test: &TestRow) -> Self {
+        Self {
+            id: test.id,
+            counts: GroupCounts::of(test.documents.iter().map(|d| d.contents)),
+        }
+    }
+}
+
+/// The header checkbox: selects every Test on this page. Its value lists
+/// them, so it works without JS too, though only to select.
+#[component]
+fn PagePick(rows: Vec<SelectedTest>) -> Element {
+    let mut selection = use_context::<Selection>();
+    let all = !rows.is_empty() && rows.iter().all(|t| selection.contains(t.id));
+    let value = selection_value(rows.iter().map(|t| t.id));
+    rsx! {
+        input {
+            r#type: "checkbox",
+            id: "pickpage",
+            name: "sel",
+            value,
+            checked: all,
+            aria_label: "Select all on this page",
+            onchange: move |event| {
+                for test in &rows {
+                    selection.set(*test, event.checked());
+                }
+            },
+        }
+    }
+}
+
+/// Shown while anything is selected: "N selected", the split download
+/// button for the selection, Select all N results and Clear selection.
+///
+/// Without JS the bar is as the page was loaded, so it also has an
+/// "Update selection" button, shown (by CSS) once a checkbox changes.
+#[component]
+fn BulkBar(total: i64, result_ids: Option<Vec<i64>>, clear: String, page: i64) -> Element {
+    let mut selection = use_context::<Selection>();
+    let selected = selection.0.read().clone();
+    let count = selected.len();
+    let counts = selected
+        .iter()
+        .fold(GroupCounts::default(), |sum, t| sum.plus(t.counts));
+    let selected_ids: HashSet<i64> = selected.iter().map(|t| t.id).collect();
+    // How many matching Tests aren't selected yet, when that can be known.
+    let unselected = result_ids.map(|ids| ids.iter().filter(|id| !selected_ids.contains(id)).count());
+    let can_select_all = unselected.is_some_and(|n| n > 0 && count + n <= MAX_BULK_TESTS);
+    let over_cap = count > MAX_BULK_TESTS;
+    // Too many to select or download them all.
+    let capped = over_cap || (unselected != Some(0) && !can_select_all);
+    let count_text = thousands(count as i64);
+    let total_text = thousands(total);
+
+    rsx! {
+        div { id: "bulk", class: if count > 0 { "bulk" } else { "bulk none" },
+            if count > 0 {
+                span { id: "selected",
+                    b { "{count_text}" }
+                    " selected"
+                }
+                if !over_cap {
+                    DownloadButton { target: Target::Selection, counts }
+                }
+                if can_select_all {
+                    button {
+                        class: "linkish",
+                        id: "select-all",
+                        r#type: "submit",
+                        name: "select",
+                        value: "all",
+                        "Select all {total_text} results"
+                    }
+                }
+                if capped {
+                    span { class: "note", "Up to {MAX_BULK_TESTS} tests can be downloaded together." }
+                }
+                a {
+                    class: "linkish",
+                    id: "clear-selection",
+                    href: clear,
+                    onclick: move |event| {
+                        event.prevent_default();
+                        selection.0.set(Vec::new());
+                    },
+                    "Clear selection"
+                }
+            }
+            button {
+                class: "linkish update",
+                r#type: "submit",
+                name: "page",
+                value: "{page}",
+                "Update selection"
             }
         }
     }
@@ -367,12 +599,13 @@ fn Include(value: &'static str, label: &'static str, checked: bool) -> Element {
     }
 }
 
-/// Previous or Next: a link, or a faint label on the first or last page.
+/// Previous or Next: a submit button of the selection form, so the
+/// selection goes along, or a faint label on the first or last page.
 #[component]
-fn PageLink(href: Option<String>, rel: &'static str, label: &'static str) -> Element {
-    match href {
-        Some(href) => rsx! {
-            a { id: "{rel}", href: "{href}", rel, "{label}" }
+fn PageButton(page: Option<i64>, id: &'static str, label: &'static str) -> Element {
+    match page {
+        Some(page) => rsx! {
+            button { id, r#type: "submit", name: "page", value: "{page}", "{label}" }
         },
         None => rsx! {
             span { class: "off", aria_disabled: "true", "{label}" }
@@ -383,8 +616,21 @@ fn PageLink(href: Option<String>, rel: &'static str, label: &'static str) -> Ele
 /// A result row. Cells carry labels for the stacked layout on phones.
 #[component]
 fn Row(test: TestRow) -> Element {
+    let mut selection = use_context::<Selection>();
+    let picked = SelectedTest::of(&test);
     rsx! {
         tr { id: "T{test.id}",
+            td { class: "pick",
+                input {
+                    r#type: "checkbox",
+                    class: "pick",
+                    name: "sel",
+                    value: "{test.id}",
+                    checked: selection.contains(test.id),
+                    aria_label: "Select this test",
+                    onchange: move |event| selection.set(picked, event.checked()),
+                }
+            }
             td { class: "year mono",
                 match test.year {
                     Some(year) => rsx! { "{year}" },
@@ -422,7 +668,7 @@ fn Row(test: TestRow) -> Element {
             }
             td { class: "download wide",
                 if !test.documents.is_empty() {
-                    DownloadButton { test_id: test.id, documents: test.documents.clone() }
+                    DownloadButton { target: Target::Test(test.id), counts: picked.counts }
                 }
             }
         }
@@ -438,17 +684,27 @@ struct DownloadFormat {
     links: Vec<(Format, String)>,
 }
 
-/// A Test's Notion-style split download button: the icon zips all of its
-/// Documents in the chosen Format, and ▾ opens a menu of kind groups (with
-/// counts, only the non-empty ones) and the Format switch.
+/// What a split download button downloads.
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    /// One Test's zip: its items are links.
+    Test(i64),
+    /// The bulk zip of the selection: its items are submit buttons of the
+    /// selection form, so they send the ticks as they are, even without JS.
+    Selection,
+}
+
+/// A Notion-style split download button: the icon zips all of the
+/// target's Documents in the chosen Format, and ▾ opens a menu of kind
+/// groups (with `counts`, only the non-empty ones) and the Format switch.
 ///
-/// Without JS the menu is a native `<details>` disclosure of plain links,
-/// and the Format switch reloads the page with `?format=`. Hydrated, it
-/// opens on click only, moves focus to its first item, and closes on an
-/// outside click, Esc (focus returns to ▾) or a choice; the Format switch
-/// then updates every row without a reload.
+/// Without JS the menu is a native `<details>` disclosure of plain links
+/// (or submit buttons), and the Format switch reloads the page with
+/// `?format=`. Hydrated, it opens on click only, moves focus to its first
+/// item, and closes on an outside click, Esc (focus returns to ▾) or a
+/// choice; the Format switch then updates every button without a reload.
 #[component]
-fn DownloadButton(test_id: i64, documents: Vec<DocumentLink>) -> Element {
+fn DownloadButton(target: Target, counts: GroupCounts) -> Element {
     let DownloadFormat { mut chosen, links } = use_context::<DownloadFormat>();
     let mut open = use_signal(|| false);
     let mut toggle = use_signal(|| None::<Rc<MountedData>>);
@@ -472,20 +728,30 @@ fn DownloadButton(test_id: i64, documents: Vec<DocumentLink>) -> Element {
     };
 
     let format = chosen();
-    let groups: Vec<(KindGroup, usize)> = KindGroup::MENU
-        .into_iter()
-        .map(|group| (group, documents.iter().filter(|d| group.includes(d.contents)).count()))
-        .filter(|(_, count)| *count > 0)
-        .collect();
+    let title = format!("Download all ({})", format.label());
 
     rsx! {
         div { class: "split",
-            a {
-                class: "all",
-                href: zip_href(test_id, KindGroup::All, format),
-                aria_label: "Download all documents",
-                title: "Download all ({format.label()})",
-                DownloadIcon {}
+            match target {
+                Target::Test(test_id) => rsx! {
+                    a {
+                        class: "all",
+                        href: zip_href(test_id, KindGroup::All, format),
+                        aria_label: "Download all documents",
+                        title,
+                        DownloadIcon {}
+                    }
+                },
+                Target::Selection => rsx! {
+                    button {
+                        class: "all",
+                        r#type: "submit",
+                        formaction: BULK_ZIP_PATH,
+                        aria_label: "Download all documents",
+                        title,
+                        DownloadIcon {}
+                    }
+                },
             }
             details {
                 open: open(),
@@ -509,19 +775,41 @@ fn DownloadButton(test_id: i64, documents: Vec<DocumentLink>) -> Element {
                     div { class: "scrim", onclick: move |_| open.set(false) }
                 }
                 div { class: "menu",
-                    for (i , (group , count)) in groups.into_iter().enumerate() {
-                        a {
-                            key: "{group.slug()}",
-                            class: "group",
-                            href: zip_href(test_id, group, format),
-                            onmounted: move |event| {
-                                if i == 0 {
-                                    first_item.set(Some(event.data()));
+                    for (i , (group , count)) in counts.menu().into_iter().enumerate() {
+                        match target {
+                            Target::Test(test_id) => rsx! {
+                                a {
+                                    key: "{group.slug()}",
+                                    class: "group",
+                                    href: zip_href(test_id, group, format),
+                                    onmounted: move |event| {
+                                        if i == 0 {
+                                            first_item.set(Some(event.data()));
+                                        }
+                                    },
+                                    onclick: move |_| close_and_refocus(),
+                                    "{group.label()}"
+                                    span { class: "n", "{count}" }
                                 }
                             },
-                            onclick: move |_| close_and_refocus(),
-                            "{group.label()}"
-                            span { class: "n", "{count}" }
+                            Target::Selection => rsx! {
+                                button {
+                                    key: "{group.slug()}",
+                                    class: "group",
+                                    r#type: "submit",
+                                    formaction: BULK_ZIP_PATH,
+                                    name: "group",
+                                    value: group.slug(),
+                                    onmounted: move |event| {
+                                        if i == 0 {
+                                            first_item.set(Some(event.data()));
+                                        }
+                                    },
+                                    onclick: move |_| close_and_refocus(),
+                                    "{group.label()}"
+                                    span { class: "n", "{count}" }
+                                }
+                            },
                         }
                     }
                     hr {}
