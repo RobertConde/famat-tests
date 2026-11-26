@@ -69,7 +69,15 @@ async fn a_published_test_is_listed_in_the_server_rendered_html() {
     let headings: Vec<String> = page.select("#results thead th").into_iter().map(text).collect();
     assert_eq!(
         headings,
-        ["Year", "Event", "Host", "Division/Level", "Test type", "Documents"]
+        [
+            "Year",
+            "Event",
+            "Host",
+            "Division/Level",
+            "Test type",
+            "Documents",
+            "Download"
+        ]
     );
     let row = page.one(&format!("#results tbody tr#T{test}"));
     assert_eq!(text_in(row, ".year"), "1993");
@@ -78,7 +86,7 @@ async fn a_published_test_is_listed_in_the_server_rendered_html() {
     assert_eq!(text_in(row, ".division-level"), "Calculus/Mu");
     assert_eq!(text_in(row, ".test-type"), "Individual");
     assert_eq!(
-        links_in(row),
+        links_in(page.one(&format!("tr#T{test} td.documents"))),
         vec![("Test".to_owned(), format!("/tests/{test}/documents/{document}/pdf"))]
     );
     assert_eq!(page.text("footer"), "Made by and maintained by Rob from Doral Academy");
@@ -459,7 +467,7 @@ async fn includes_ignores_hidden_and_trashed_documents() {
     assert_eq!(app.search("/?includes=solutions").await, vec![with_solutions]);
     let page = app.get_page("/").await;
     assert_eq!(
-        links_in(page.one(&format!("tr#T{with_trashed}"))).len(),
+        links_in(page.one(&format!("tr#T{with_trashed} td.documents"))).len(),
         1,
         "only the Test is listed"
     );

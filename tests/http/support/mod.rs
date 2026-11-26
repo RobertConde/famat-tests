@@ -21,6 +21,7 @@ pub mod admin;
 pub mod download;
 pub mod fixtures;
 pub mod html;
+pub mod zip;
 
 use std::{
     fs::File,
@@ -221,6 +222,11 @@ impl TestApp {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// The server's process ID, e.g. to watch its memory.
+    pub fn server_pid(&self) -> u32 {
+        self.server.id()
     }
 
     pub fn url(&self, path: &str) -> String {

@@ -213,7 +213,7 @@ async fn a_document_on_several_tests_takes_the_id_of_the_test_it_is_downloaded_f
     // Each row links to the Document through its own Test.
     let page = app.get_page("/").await;
     for test in [geometry, algebra] {
-        let hrefs: Vec<String> = links_in(page.one(&format!("tr#T{test}")))
+        let hrefs: Vec<String> = links_in(page.one(&format!("tr#T{test} td.documents")))
             .into_iter()
             .map(|(_, href)| href)
             .collect();

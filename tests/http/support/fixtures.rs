@@ -93,6 +93,17 @@ impl<'a> NewDocument<'a> {
             ..Self::pdf(kind, docx)
         }
     }
+
+    /// A Published Document of `kind` whose Original is a ZIP, which has no PDF.
+    pub fn zip(kind: &'static str, zip: &'a [u8]) -> Self {
+        Self {
+            content_type: "application/zip",
+            extension: "zip",
+            pdf: None,
+            pdf_status: "not_convertible",
+            ..Self::pdf(kind, zip)
+        }
+    }
 }
 
 impl TestApp {
@@ -197,6 +208,21 @@ impl TestApp {
             .execute(&self.db)
             .await
             .expect("trash Document");
+    }
+
+    /// Say when one of a Document's files was stored, e.g.
+    /// `"2023-02-11 15:04:06+00"`.
+    pub async fn set_stored_at(&self, document: i64, role: &str, at: &str) {
+        sqlx::query(
+            "UPDATE document_files SET created_at = $3::timestamptz
+             WHERE document_id = $1 AND role = $2::file_role",
+        )
+        .bind(document)
+        .bind(role)
+        .bind(at)
+        .execute(&self.db)
+        .await
+        .expect("set when a Document file was stored");
     }
 
     /// Rename a Facet value, as an Admin's rename does.

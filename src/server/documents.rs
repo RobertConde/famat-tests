@@ -23,7 +23,7 @@ use tokio_util::io::ReaderStream;
 
 use super::{
     AppState,
-    download_name::{NameParts, content_disposition, file_name},
+    download_name::{NameParts, TestParts, content_disposition, file_name},
     storage::FileRole,
 };
 
@@ -109,11 +109,25 @@ async fn redirect_to_first_test(Extension(state): Extension<AppState>, id: i64, 
 /// what its name is made of, and its files.
 #[derive(FromRow)]
 struct Download {
-    test_id: i64,
+    #[sqlx(flatten)]
+    test: TestFacets,
     id: i64,
     kind: String,
     label: Option<String>,
     pdf_status: String,
+    #[sqlx(skip)]
+    original: Option<File>,
+    #[sqlx(skip)]
+    pdf: Option<File>,
+}
+
+/// The Facets of the Test a download comes from, as named in its download
+/// names. Selected as `t.id AS test_id, t.year, t.month_applicable, m.name
+/// AS month, c.name AS competition, h.name AS host, dl.name AS
+/// division_level, tt.name AS test_type` (see [`TEST_FACETS_FROM`]).
+#[derive(FromRow)]
+pub(super) struct TestFacets {
+    pub test_id: i64,
     year: Option<i16>,
     month_applicable: bool,
     month: Option<String>,
@@ -121,22 +135,44 @@ struct Download {
     host: Option<String>,
     division_level: Option<String>,
     test_type: Option<String>,
-    #[sqlx(skip)]
-    original: Option<File>,
-    #[sqlx(skip)]
-    pdf: Option<File>,
 }
 
+/// The select list and joins [`TestFacets`] reads, over `tests t`.
+pub(super) const TEST_FACETS_FROM: &str = "t.id AS test_id, t.year, t.month_applicable,
+        m.name AS month, c.name AS competition, h.name AS host,
+        dl.name AS division_level, tt.name AS test_type
+    FROM tests t
+    LEFT JOIN facet_values m  ON m.id  = t.month_id
+    LEFT JOIN facet_values c  ON c.id  = t.competition_id
+    LEFT JOIN facet_values h  ON h.id  = t.host_id
+    LEFT JOIN facet_values dl ON dl.id = t.division_level_id
+    LEFT JOIN facet_values tt ON tt.id = t.test_type_id";
+
+impl TestFacets {
+    pub fn name_parts(&self) -> TestParts<'_> {
+        TestParts {
+            test_id: self.test_id,
+            year: self.year,
+            month: self.month.as_deref().filter(|_| self.month_applicable),
+            competition: self.competition.as_deref(),
+            host: self.host.as_deref(),
+            division_level: self.division_level.as_deref(),
+            test_type: self.test_type.as_deref(),
+        }
+    }
+}
+
+/// One of a Document's files, as `document_files` describes it.
 #[derive(FromRow)]
-struct File {
-    role: String,
-    content_type: String,
+pub(super) struct File {
+    pub role: String,
+    pub content_type: String,
     /// Lower case, without the dot; empty when the file had none.
-    extension: String,
+    pub extension: String,
 }
 
 impl File {
-    fn is_pdf(&self) -> bool {
+    pub fn is_pdf(&self) -> bool {
         self.content_type == "application/pdf" || self.extension == "pdf"
     }
 }
@@ -145,24 +181,15 @@ impl Download {
     /// `None` unless the Document belongs to the Test and both are Published
     /// and untrashed.
     async fn find(db: &PgPool, test_id: i64, id: i64) -> Result<Option<Self>, sqlx::Error> {
-        let download: Option<Self> = sqlx::query_as(
-            "SELECT t.id AS test_id, d.id, k.name AS kind, d.label, d.pdf_status::text,
-                    t.year, t.month_applicable,
-                    m.name AS month, c.name AS competition, h.name AS host,
-                    dl.name AS division_level, tt.name AS test_type
-             FROM tests t
+        let download: Option<Self> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT d.id, k.name AS kind, d.label, d.pdf_status::text, {TEST_FACETS_FROM}
              JOIN test_documents td ON td.test_id = t.id
              JOIN documents d       ON d.id = td.document_id
              JOIN document_kinds k  ON k.id = d.kind_id
-             LEFT JOIN facet_values m  ON m.id  = t.month_id
-             LEFT JOIN facet_values c  ON c.id  = t.competition_id
-             LEFT JOIN facet_values h  ON h.id  = t.host_id
-             LEFT JOIN facet_values dl ON dl.id = t.division_level_id
-             LEFT JOIN facet_values tt ON tt.id = t.test_type_id
              WHERE t.id = $1 AND d.id = $2
                AND t.published AND t.trashed_at IS NULL
-               AND d.published AND d.trashed_at IS NULL",
-        )
+               AND d.published AND d.trashed_at IS NULL"
+        )))
         .bind(test_id)
         .bind(id)
         .fetch_optional(db)
@@ -187,14 +214,8 @@ impl Download {
     fn file_name(&self, extension: &str) -> String {
         file_name(
             &NameParts {
-                test_id: self.test_id,
+                test: self.test.name_parts(),
                 document_id: self.id,
-                year: self.year,
-                month: self.month.as_deref().filter(|_| self.month_applicable),
-                competition: self.competition.as_deref(),
-                host: self.host.as_deref(),
-                division_level: self.division_level.as_deref(),
-                test_type: self.test_type.as_deref(),
                 kind: &self.kind,
                 label: self.label.as_deref(),
             },
@@ -203,7 +224,7 @@ impl Download {
     }
 
     fn original_href(&self) -> String {
-        format!("/tests/{}/documents/{}/original", self.test_id, self.id)
+        format!("/tests/{}/documents/{}/original", self.test.test_id, self.id)
     }
 }
 
@@ -274,7 +295,7 @@ fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "Document not found").into_response()
 }
 
-fn server_error(e: impl std::fmt::Display) -> Response {
+pub(super) fn server_error(e: impl std::fmt::Display) -> Response {
     dioxus::logger::tracing::error!("{e:#}");
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
 }

@@ -6,6 +6,7 @@
 //! pages. Public pages must work without the client (ADR 0001).
 
 mod app;
+mod download;
 
 #[cfg(feature = "server")]
 mod server;
