@@ -458,7 +458,7 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 
 /// A 303, which a browser follows with a GET (ADR 0001: Dioxus would turn a
 /// 2xx form response into a redirect to the Referer).
-fn see_other(location: &str, set_cookie: Option<String>) -> Response {
+pub fn see_other(location: &str, set_cookie: Option<String>) -> Response {
     let mut response = Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, location);

@@ -5,6 +5,7 @@
 
 mod support;
 
+mod add_test;
 mod admin_login;
 mod documents;
 mod download_menu;
