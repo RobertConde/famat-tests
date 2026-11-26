@@ -2184,6 +2184,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower-layer",
+ "tower-service",
  "uuid",
  "zip",
 ]

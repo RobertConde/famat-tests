@@ -23,4 +23,5 @@ mod pdf_queue;
 mod search_page;
 mod test_edit;
 mod trash;
+mod upload_rejections;
 mod zips;

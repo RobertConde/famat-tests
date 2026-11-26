@@ -334,7 +334,7 @@ pub async fn upload(
     headers: &HeaderMap,
     mut form: MultipartFormData,
 ) -> Result<Response, ServerFnError> {
-    // Anonymous callers are refused before any of the body is read.
+    // Anonymous callers are refused before any of the body is used.
     auth::require_admin(state, headers).await?;
     let csrf = match form.next_field().await {
         Ok(Some(field)) if field.name() == Some("csrf") => field.text().await.unwrap_or_default(),
@@ -351,10 +351,9 @@ pub async fn upload(
     let plan = match planned {
         Ok(plan) => plan,
         Err(refusal) => {
+            // The rest of the body is read before the refusal goes out
+            // (`server::upload`).
             upload.discard(state).await;
-            // Read the rest, so the browser is still listening when the
-            // refusal arrives.
-            drain(&mut form).await;
             return Ok(refusal.response());
         }
     };
@@ -393,14 +392,6 @@ pub(super) async fn receive(
                 upload.fields.entry(name).or_insert(value);
             }
         }
-    }
-}
-
-/// Read the rest of a multipart body, so the browser is still listening
-/// when an early refusal arrives. (#47 replaces this with a shared helper.)
-pub(super) async fn drain(form: &mut MultipartFormData) {
-    while let Ok(Some(mut field)) = form.next_field().await {
-        while let Ok(Some(_)) = field.chunk().await {}
     }
 }
 

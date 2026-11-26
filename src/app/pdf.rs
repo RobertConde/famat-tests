@@ -83,7 +83,7 @@ pub async fn pdf_problems_page() -> Result<PdfProblemsPage, ServerFnError> {
 #[post("/api/admin/documents/upload-pdf",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(axum::extract::DefaultBodyLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
 pub async fn upload_pdf(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::pdf::admin::upload(&state, &headers, form).await
 }

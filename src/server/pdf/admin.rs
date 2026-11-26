@@ -200,7 +200,7 @@ pub async fn upload(
     headers: &HeaderMap,
     mut form: MultipartFormData,
 ) -> Result<Response, ServerFnError> {
-    // Anonymous callers are refused before any of the body is read.
+    // Anonymous callers are refused before any of the body is used.
     auth::require_admin(state, headers).await?;
     let csrf = match form.next_field().await {
         Ok(Some(field)) if field.name() == Some("csrf") => field.text().await.unwrap_or_default(),
@@ -226,10 +226,7 @@ pub async fn upload(
             _ => {}
         }
     };
-    // Read the rest, so the browser is still listening when a refusal arrives.
-    while let Ok(Some(mut field)) = form.next_field().await {
-        while let Ok(Some(_)) = field.chunk().await {}
-    }
+    // The rest of the body is read before a refusal goes out (`server::upload`).
     Ok(response)
 }
 
