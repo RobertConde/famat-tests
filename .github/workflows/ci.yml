@@ -40,6 +40,32 @@ jobs:
       - name: Run the HTTP test suite
         run: scripts/test.sh
 
+  pdf-conversion:
+    name: PDF conversion (slow, real LibreOffice)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The packages the app image (Containerfile) has.
+      - name: Install LibreOffice
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice-writer-nogui libreoffice-impress-nogui \
+            fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core
+          soffice --version
+
+      - name: Start Postgres and Garage
+        run: scripts/dev-up.sh
+        env:
+          CONTAINER_ENGINE: docker
+
+      - name: Run the slow PDF conversion tests
+        run: scripts/test.sh pdf_conversion -- --ignored
+
   wasm-client:
     name: WASM client builds
     runs-on: ubuntu-latest

@@ -36,6 +36,15 @@ hex = { version = "0.4", optional = true }
 getrandom = { version = "0.3", optional = true }
 rpassword = { version = "7", optional = true }
 serde_json = { version = "1", optional = true }
+# PDF conversion (server::pdf): checking that a PDF parses, writing PDFs of
+# images, telling file types apart, and the per-job LibreOffice profiles.
+lopdf = { version = "0.47", default-features = false, optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "gif", "tiff", "bmp", "webp"], optional = true }
+flate2 = { version = "1", optional = true }
+zip = { version = "2.4", default-features = false, optional = true }
+cfb = { version = "0.16", optional = true }
+tempfile = { version = "3", optional = true }
+libc = { version = "0.2", optional = true }
 
 [features]
 default = []
@@ -59,6 +68,13 @@ server = [
     "dep:getrandom",
     "dep:rpassword",
     "dep:serde_json",
+    "dep:lopdf",
+    "dep:image",
+    "dep:flate2",
+    "dep:zip",
+    "dep:cfb",
+    "dep:tempfile",
+    "dep:libc",
 ]
 
 [dev-dependencies]
@@ -74,6 +90,8 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Reads the zips the server streams, independently of async_zip. Stored only.
 zip = { version = "2.4", default-features = false }
+# Reads the PDFs real conversions make (the slow tests).
+lopdf = { version = "0.47", default-features = false }
 
 [[test]]
 name = "http"

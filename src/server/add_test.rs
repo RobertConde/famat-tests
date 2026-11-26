@@ -18,7 +18,8 @@
 //!
 //! Documents get `label_source = admin`. A PDF Original, or a Word Original
 //! with its PDF supplied, is `ready`; a ZIP is `not_convertible`; any other
-//! Original is `preparing`, for the conversion queue to pick up.
+//! Original is `preparing`, with a job queued for its conversion
+//! (`server::pdf`) in the same transaction.
 
 use std::collections::HashMap;
 
@@ -540,6 +541,7 @@ async fn save_or_hold(state: &AppState, plan: &Plan) -> anyhow::Result<String> {
     let mut tx = state.db.begin().await?;
     let saved = commit(&mut tx, plan, Target::NewTest).await?;
     tx.commit().await?;
+    state.pdf.wake();
     Ok(saved.location())
 }
 
@@ -680,6 +682,9 @@ async fn commit(tx: &mut Transaction<'_, Postgres>, plan: &Plan, target: Target)
         .bind(pdf_status)
         .execute(&mut **tx)
         .await?;
+        if pdf_status == "preparing" {
+            super::pdf::enqueue(tx, document.id).await?;
+        }
         sqlx::query("INSERT INTO test_documents (test_id, document_id) VALUES ($1, $2)")
             .bind(test_id)
             .bind(document.id)
@@ -831,6 +836,7 @@ async fn finish_into(state: &AppState, pending: i64, target: Target) -> anyhow::
     }
     let saved = commit(&mut tx, &plan, target).await?;
     tx.commit().await?;
+    state.pdf.wake();
     Ok(auth::see_other(&saved.location(), None))
 }
 

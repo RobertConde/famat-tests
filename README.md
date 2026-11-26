@@ -36,7 +36,13 @@ scripts/test.sh search_page     # just the tests whose names match
 
 The suite in `tests/http/` is HTTP-only: each test starts the real `famat` binary on a free port against its own fresh Postgres database and its own key prefix in the Garage bucket. It sets up data with fixtures, then asserts only on what comes back over HTTP: HTML, status codes, headers and bytes. Everything is removed afterwards. Set `FAMAT_TEST_KEEP=1` to keep a test's database, objects and server log. Set `FAMAT_TEST_SERVER=dist/server` to run the suite against a release bundle.
 
-CI (`.github/workflows/ci.yml`) runs the same scripts on every push, with Docker.
+The servers the tests start convert no PDFs unless a test asks (`PDF_WORKERS=0`). The PDF queue tests (`pdf_queue`) use a stand-in for LibreOffice. The real conversions are slow and need LibreOffice (`soffice`) installed, so they are `#[ignore]`d:
+
+```sh
+scripts/test.sh pdf_conversion -- --ignored
+```
+
+CI (`.github/workflows/ci.yml`) runs the same scripts on every push, with Docker. The slow PDF tests run in their own job, which installs LibreOffice.
 
 ## Release build
 
@@ -45,6 +51,12 @@ scripts/bundle.sh     # dx bundle --web --release into a clean dist/
 ```
 
 This produces `dist/server` with `dist/public/` (pre-compressed WASM and JS) beside it.
+
+The app image (`Containerfile`, Debian trixie) builds that bundle and adds LibreOffice (Writer and Impress, without their GUIs) and metric-compatible fonts:
+
+```sh
+podman build -t famat -f Containerfile .
+```
 
 ## Configuration
 
@@ -58,6 +70,11 @@ The server reads its configuration from the environment:
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Garage key |
 | `S3_KEY_PREFIX` | prefix for every object key, default empty |
 | `IP`, `PORT` | listen address, default `127.0.0.1:8080` |
+| `PDF_WORKERS` | PDF conversions run at once, default 2; 0 turns conversion off (jobs still queue) |
+| `PDF_TIMEOUT_SECS` | hard timeout per conversion, default 120 |
+| `PDF_SOFFICE` | the LibreOffice command, default `soffice` |
+| `PDF_PROFILE_TEMPLATE` | a LibreOffice profile each job copies (the image has one); unset, jobs start from an empty one |
+| `PDF_WORK_DIR` | where jobs make their temporary directories, default the system's |
 
 ## Admin login
 
@@ -114,15 +131,46 @@ tx.commit().await?;
 
 There is one entry per field, with human-readable values (Facet value names, `true`/`false`). A new record also gets an `id` entry with no before (`record_created`), and a deleted one an `id` entry with no after (`record_deleted`).
 
+## PDF conversion
+
+Every Document keeps its Original, and a PDF is made from it in the background (`server::pdf`).
+
+- **Queue:** the `pdf_jobs` table holds one job per Document whose `pdf_status` is `preparing`.
+  - Add test queues them in its own transaction.
+  - At startup, every `preparing` Document without a job gets one, which covers a backfill or a crash.
+  - Workers claim jobs with `FOR UPDATE SKIP LOCKED` and a lease. If a worker dies, its lease runs out and the job is claimed again.
+- **Limits:** 2 jobs at once and a 120 s hard timeout, after which the converter's whole process group is killed. Each job is tried twice at most (one retry).
+- **Converters:**
+  - Word, RTF, ODF and PowerPoint go through LibreOffice, headless, with a throwaway profile per job and `MathTypeToMath` off. Two `soffice` processes sharing a profile silently produce nothing.
+  - Images are wrapped losslessly: a JPEG byte for byte, anything else as its own pixels.
+  - A PDF Original is its own PDF. A ZIP is not convertible.
+  - An Original with no extension has its type read from its contents.
+- **Success** means a non-empty PDF that parses. It is stored as `documents/{id}/pdf`, with its sha256 in `document_files`, and the status becomes `ready`.
+- **Failure** after the retry sets `failed` and Needs review, with the error as the comment. A later success clears a Needs review that was only about the failure.
+- **Admins** (the PDF problems page, `/admin/needs-review`) can **Upload PDF** to replace a PDF by hand, **Retry PDF**, and **Retry all failed**. Each is a CSRF-checked form post written to the change log.
+
+Until the PDF is ready, a Document's PDF link says "PDF being prepared" and offers the Original.
+
+To queue a conversion from other code, inside the transaction that sets `pdf_status = 'preparing'`:
+
+```rust
+server::pdf::enqueue(&mut tx, document_id).await?;
+tx.commit().await?;
+state.pdf.wake();
+```
+
 ## Layout
 
 - `src/app.rs`: the Dioxus app (routes, pages, server functions), compiled for both server and WASM
 - `src/app/admin.rs`: the login and logout pages and the Admin menu
 - `src/app/add_test.rs`, `src/app/upload_rules.rs`: the Add test page, and the file rules it shares with the server (allowed types, kind guessing, Word+PDF pairing)
+- `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
-- `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, and plain axum routes such as downloads
+- `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, the PDF queue (`pdf/`), and plain axum routes such as downloads
 - `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan, and loading it
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)
 - `tests/fixtures/import/`: the synthetic inputs the import tests run on
+- `tests/fixtures/pdf/`: the files the PDF conversion tests convert
+- `Containerfile`: the app image
 - `scripts/`, `dev/`: local Postgres + Garage, and the run, test and bundle commands

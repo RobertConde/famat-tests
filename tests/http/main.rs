@@ -12,5 +12,7 @@ mod documents;
 mod download_menu;
 mod download_names;
 mod import;
+mod pdf_conversion;
+mod pdf_queue;
 mod search_page;
 mod zips;
