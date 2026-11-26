@@ -418,6 +418,22 @@ fn DocumentEditor(document: EditedDocument, test: i64, csrf: String, kinds: Vec<
                 " · "
                 span { class: "label-source", {label_source_text(&document.label_source)} }
             }
+            p { class: "open-document",
+                a {
+                    class: "view-pdf",
+                    href: "/tests/{test}/documents/{id}/pdf",
+                    target: "_blank",
+                    rel: "noopener",
+                    "View PDF"
+                }
+                " · "
+                a {
+                    class: "download-original",
+                    href: "/tests/{test}/documents/{id}/original",
+                    download: true,
+                    "Download original ({extension})"
+                }
+            }
             if document.pdf_status == "failed" {
                 if let Some(comment) = &document.needs_review_comment {
                     p { class: "refusal pdf-error", "{comment}" }
