@@ -1,7 +1,7 @@
 # The FAMAT Test Bank on the server: Docker Compose project "famat".
-# Installed to /etc/famat/compose.yaml by deploy/install.sh and run by
+# Installed to /opt/stacks/famat/compose.yaml by deploy/install.sh and run by
 # famat.service (deploy/systemd/famat.service). Relative paths are relative
-# to /etc/famat.
+# to /opt/stacks/famat.
 #
 #   cloudflared ──► app:8080 ──► postgres:5432
 #                            └─► garage:3900 (S3)
@@ -20,12 +20,12 @@
 # mounted the containers refuse to start instead of starting on an empty
 # database on the root disk. famat.service checks the mount as well.
 #
-# Secrets are root-only env files in /etc/famat/secrets/ (made by
+# Secrets are root-only env files in /opt/stacks/famat/secrets/ (made by
 # deploy/create-secrets.sh), never in git. `docker compose config` prints
 # their values, so don't paste its output anywhere.
 #
 # Local changes (for example pinning the app's version) go in
-# /etc/famat/compose.override.yaml, which Compose merges in on its own
+# /opt/stacks/famat/compose.override.yaml, which Compose merges in on its own
 # (docs/deploy/upgrading.md). install.sh never touches that file.
 
 name: famat

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create the secrets the FAMAT containers use: root-only env files in
-# /etc/famat/secrets/, which deploy/compose.yaml reads (env_file). Generates
+# /opt/stacks/famat/secrets/, which deploy/compose.yaml reads (env_file). Generates
 # the random ones and asks for the Cloudflare Tunnel token. A file that
 # already exists is kept, so this is safe to re-run.
 #
@@ -22,7 +22,7 @@
 # argon2 hash in Postgres (docs/deploy/admin.md).
 set -euo pipefail
 
-SECRETS="${FAMAT_SECRETS:-/etc/famat/secrets}"
+SECRETS="${FAMAT_SECRETS:-/opt/stacks/famat/secrets}"
 umask 077
 install -d -m 0700 "$SECRETS"
 

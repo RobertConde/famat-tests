@@ -8,11 +8,11 @@
 #   sudo famat --input /srv/famat/import import --sheet /input/sheet.csv … --dry-run
 #
 # --input DIR mounts DIR read-only at /input; give the command paths under
-# /input. Settings (environment): FAMAT_DIR (default /etc/famat, where the
+# /input. Settings (environment): FAMAT_DIR (default /opt/stacks/famat, where the
 # compose file is).
 set -euo pipefail
 
-DIR="${FAMAT_DIR:-/etc/famat}"
+DIR="${FAMAT_DIR:-/opt/stacks/famat}"
 
 mounts=()
 if [ "${1:-}" = "--input" ]; then

@@ -11,7 +11,7 @@ browser ─► Cloudflare edge ─► tunnel "famat" ─► famat-cloudflared �
 
 Cloudflare terminates HTTPS. cloudflared dials out, so the server opens no ports.
 
-**This is a tunnel of its own.** The server already runs a host `cloudflared` service with another tunnel. Leave that service, its `/etc/cloudflared/` and its tunnel's routes exactly as they are. Don't add the test bank's hostnames to it, and never run `cloudflared service install` on the host. The test bank's tunnel is run by the `famat-cloudflared` container, with the token from `/etc/famat/secrets/tunnel.env`.
+**This is a tunnel of its own.** The server already runs a host `cloudflared` service with another tunnel. Leave that service, its `/etc/cloudflared/` and its tunnel's routes exactly as they are. Don't add the test bank's hostnames to it, and never run `cloudflared service install` on the host. The test bank's tunnel is run by the `famat-cloudflared` container, with the token from `/opt/stacks/famat/secrets/tunnel.env`.
 
 Two rules hold for every request:
 

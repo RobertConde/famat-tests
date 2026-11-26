@@ -1,4 +1,4 @@
-# famat-backup settings: /etc/famat/backup.conf (root, mode 0600).
+# famat-backup settings: /opt/stacks/famat/backup.conf (root, mode 0600).
 # This file is bash, sourced by famat-backup. Anything left out keeps the
 # default shown in deploy/backup/famat-backup. Never commit the real one.
 
@@ -9,7 +9,7 @@
 RESTIC_REPOSITORY=sftp:storagebox:famat-restic
 # The repository password: a random string, kept here AND in the owner's
 # password manager. Without it the backups cannot be read.
-RESTIC_PASSWORD_FILE=/etc/famat/restic-password
+RESTIC_PASSWORD_FILE=/opt/stacks/famat/restic-password
 
 # Where the dumps and the Garage copy are written before restic reads them.
 # Needs room for a full copy of the Garage bucket, so it is on the RAID. Its
@@ -33,7 +33,7 @@ BETTERSTACK_HEARTBEAT_URL=
 # -------------------------------------------------------------- test bank
 FAMAT_ENABLED=1
 # These match deploy/compose.yaml and rarely change.
-#FAMAT_DIR=/etc/famat
+#FAMAT_DIR=/opt/stacks/famat
 #FAMAT_POSTGRES_CONTAINER=famat-postgres
 #FAMAT_DB_NAME=famat
 #FAMAT_S3_BUCKET=famat

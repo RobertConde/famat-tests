@@ -15,6 +15,17 @@ You need:
 - Never run `docker system prune` or `docker volume prune` here. They would also remove things belonging to other stacks.
 - Don't add users to the `docker` group. It is root-equivalent, and it can read the secrets through `docker inspect`.
 
+
+**Where things go.** Everything the stack needs lives in **`/opt/stacks/famat/`**: `compose.yaml`, `garage.toml`, `secrets/`, `backup.conf` and `restic-password`. Install somewhere else with `sudo FAMAT_DIR=/path deploy/install.sh`. The repo can live anywhere; `/opt/famat-tests` is suggested. Data stays on the RAID under `/mnt/raid/famat/`. If `/opt/stacks` is Dockge's folder, Dockge lists `famat` as a stack. That's fine for status and logs, but start and stop it with `systemctl` (the `famat` unit waits for Docker and the RAID).
+
+**Moving from `/etc/famat`.** Earlier versions installed to `/etc/famat`. To move:
+
+```sh
+cd /opt/famat-tests && git pull && sudo deploy/install.sh
+```
+
+`install.sh` copies `/etc/famat` (secrets included, with their permissions) to `/opt/stacks/famat`, rewrites the paths in `backup.conf`, renames the old directory to `/etc/famat.moved-<date>`, and stops and restarts the stack if it was running. Nothing is regenerated. Delete the old directory once the stack runs.
+
 ## 0. Check the server first
 
 These only read:
@@ -72,10 +83,10 @@ deploy/install.sh
 
 `install.sh` copies:
 
-- `deploy/compose.yaml` to `/etc/famat/compose.yaml`, and Garage's config to `/etc/famat/garage.toml`
+- `deploy/compose.yaml` to `/opt/stacks/famat/compose.yaml`, and Garage's config to `/opt/stacks/famat/garage.toml`
 - `famat`, `famat-update`, `famat-backup` and `famat-garage-bootstrap` to `/usr/local/sbin/`
 - `famat.service`, `famat-update.service` and `.timer`, and `famat-backup.service` and `.timer` to `/etc/systemd/system/`
-- `/etc/famat/backup.conf`, from the example, the first time only
+- `/opt/stacks/famat/backup.conf`, from the example, the first time only
 
 It then runs `systemctl daemon-reload`. It starts nothing.
 
@@ -86,18 +97,18 @@ First create the test bank's **own** tunnel in Cloudflare and copy its token: [c
 ```sh
 cd /opt/famat-tests
 deploy/create-secrets.sh          # asks for the tunnel token (no echo)
-ls -l /etc/famat/secrets/         # db.env  garage.env  s3.env  tunnel.env, all -rw------- root
+ls -l /opt/stacks/famat/secrets/         # db.env  garage.env  s3.env  tunnel.env, all -rw------- root
 deploy/install.sh                 # again: now it also checks the compose file ("docker compose config: OK")
 ```
 
-This writes four root-only env files to `/etc/famat/secrets/`. All the values but the token are random. They exist only there, never in git. A file that already exists is kept, so the script is safe to re-run.
+This writes four root-only env files to `/opt/stacks/famat/secrets/`. All the values but the token are random. They exist only there, never in git. A file that already exists is kept, so the script is safe to re-run.
 
 To replace the tunnel token later:
 
 ```sh
 read -rs -p 'Token: ' token; echo
-printf 'TUNNEL_TOKEN=%s\n' "$token" > /etc/famat/secrets/tunnel.env
-cd /etc/famat && docker compose up -d cloudflared     # recreates it with the new token
+printf 'TUNNEL_TOKEN=%s\n' "$token" > /opt/stacks/famat/secrets/tunnel.env
+cd /opt/stacks/famat && docker compose up -d cloudflared     # recreates it with the new token
 ```
 
 ## 5. Start the containers
@@ -107,12 +118,12 @@ The app image is `ghcr.io/robertconde/famat-tests`, pushed by CI (`.github/workf
 Pull the images first, so the first start doesn't run into its timeout on a slow pull:
 
 ```sh
-cd /etc/famat
+cd /opt/stacks/famat
 docker compose pull app postgres garage cloudflared rclone
 systemctl enable --now famat.service
 ```
 
-`famat.service` runs `docker compose up` in `/etc/famat`, in order:
+`famat.service` runs `docker compose up` in `/opt/stacks/famat`, in order:
 
 1. Postgres and Garage, each counted as started once its health check passes.
 2. The app (`depends_on: … service_healthy`). It runs the migrations, then passes `/healthz`. The unit counts as started at this point.
@@ -130,7 +141,7 @@ Check:
 
 ```sh
 systemctl status famat --no-pager
-cd /etc/famat && docker compose ps     # postgres, garage, app (healthy); cloudflared (healthy) once the tunnel is up
+cd /opt/stacks/famat && docker compose ps     # postgres, garage, app (healthy); cloudflared (healthy) once the tunnel is up
 docker exec famat-app curl -fsS http://127.0.0.1:8080/healthz; echo     # ok
 docker logs --tail 20 famat-cloudflared    # "Registered tunnel connection" ×4
 journalctl -t famat-app -n 20              # the app's log (also: docker logs famat-app)
@@ -190,7 +201,7 @@ See [admin.md](admin.md). Put the passcode in the password manager.
 
 ```sh
 umask 077
-openssl rand -base64 32 > /etc/famat/restic-password   # copy this into the password manager NOW
+openssl rand -base64 32 > /opt/stacks/famat/restic-password   # copy this into the password manager NOW
 famat-backup restic init
 ```
 
@@ -198,7 +209,7 @@ Without that password, the backups cannot be read. The Storage Box only ever see
 
 ### Settings
 
-Edit `/etc/famat/backup.conf`:
+Edit `/opt/stacks/famat/backup.conf`:
 
 - **`BETTERSTACK_HEARTBEAT_URL`:** in Better Stack, open Uptime → Heartbeats → Create heartbeat. Name it "Nightly backup", set the period to 1 day and the grace period to 2 hours, and pick who to alert. Then copy the URL. A successful run requests it, and a failed run requests `<url>/fail`, which alerts at once.
 - **`STAGING`** stays `/mnt/raid/famat/backup-staging` (step 2). It holds a full copy of the Garage bucket.
@@ -255,4 +266,4 @@ Then do a test restore: [restore.md](restore.md). Repeat it every quarter.
 
 In Better Stack, add HTTP monitors for `https://famat.rconde.xyz/healthz` and, after launch, `https://tests.famat.org/healthz`. Each should expect status 200 and the body `ok`. `/healthz` answers 200 only when the app can reach Postgres.
 
-Docker doesn't restart a container just because it turned unhealthy, so these monitors are what notice a hung app. If one alerts: `cd /etc/famat && docker compose ps`, `journalctl -t famat-app -n 100`, then `docker compose restart app`.
+Docker doesn't restart a container just because it turned unhealthy, so these monitors are what notice a hung app. If one alerts: `cd /opt/stacks/famat && docker compose ps`, `journalctl -t famat-app -n 100`, then `docker compose restart app`.

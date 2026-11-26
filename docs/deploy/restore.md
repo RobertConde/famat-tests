@@ -1,6 +1,6 @@
 # Restoring from the backups
 
-All commands run as root on the server. `famat-backup restic …` runs restic against the repository in `/etc/famat/backup.conf`, with its password. `docker compose` commands run in `/etc/famat`.
+All commands run as root on the server. `famat-backup restic …` runs restic against the repository in `/opt/stacks/famat/backup.conf`, with its password. `docker compose` commands run in `/opt/stacks/famat`.
 
 ## What a snapshot holds
 
@@ -47,7 +47,7 @@ This replaces everything since the snapshot.
 2. Stop the app and the tunnel, and rename the databases:
 
    ```sh
-   cd /etc/famat
+   cd /opt/stacks/famat
    docker compose stop cloudflared app
    docker exec famat-postgres psql -U famat -d postgres -c 'alter database famat rename to famat_broken'
    docker exec famat-postgres psql -U famat -d postgres -c 'alter database famat_restore rename to famat'
@@ -71,7 +71,7 @@ docker exec famat-postgres psql -U famat -At -c "select role, encode(sha256, 'he
 The sha256 should match the database's. To put it back into Garage, for an object deleted by mistake, use the compose file's `rclone` service (it is on the internal network, with the app's key):
 
 ```sh
-cd /etc/famat
+cd /opt/stacks/famat
 docker compose run --rm --no-deps -T -v /root:/restore:ro \
   rclone copyto /restore/D1160-original :s3:famat/documents/1160/original
 ```
@@ -99,8 +99,8 @@ The other secrets can be new: the database is restored from a dump and the Garag
    - the deployment files and `install.sh`
    - `create-secrets.sh` with the `famat` tunnel's token
 
-   On the same server, with only the data lost: `systemctl stop famat` first. Then move whatever is left of `/mnt/raid/famat/postgres` and `garage/` aside, and make the directories again as in step 2. Keep `/etc/famat/secrets/`; it still works.
-2. **Repository access.** Do the "Storage Box access" part of step 8. Put the old restic password into `/etc/famat/restic-password` instead of making a new one, and set `RESTIC_REPOSITORY` in `/etc/famat/backup.conf`. **Don't run `restic init`.** Check with `famat-backup restic snapshots`.
+   On the same server, with only the data lost: `systemctl stop famat` first. Then move whatever is left of `/mnt/raid/famat/postgres` and `garage/` aside, and make the directories again as in step 2. Keep `/opt/stacks/famat/secrets/`; it still works.
+2. **Repository access.** Do the "Storage Box access" part of step 8. Put the old restic password into `/opt/stacks/famat/restic-password` instead of making a new one, and set `RESTIC_REPOSITORY` in `/opt/stacks/famat/backup.conf`. **Don't run `restic init`.** Check with `famat-backup restic snapshots`.
 3. **Restore the test bank's staging copy:**
 
    ```sh
@@ -111,7 +111,7 @@ The other secrets can be new: the database is restored from a dump and the Garag
 4. **Start the containers and set up Garage:**
 
    ```sh
-   cd /etc/famat
+   cd /opt/stacks/famat
    docker compose pull app postgres garage cloudflared rclone
    systemctl enable --now famat     # the app migrates an empty database
    famat-garage-bootstrap
