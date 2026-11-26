@@ -126,6 +126,13 @@ What it does with the inputs:
 - Search URLs resolve a value by its name, then by an alias, then by either one ignoring case (`server::facet_values::FacetValueList::find`). The page then shows the current name, so `/?host=Chiles` still finds the same Tests after "Chiles" becomes "Lawton Chiles".
 - A value is deleted only when no Test uses it.
 
+## Document kinds
+
+- **Document kinds** (`/admin/document-kinds`) lists the kinds in display order, each with how many Documents use it (Hidden ones and those in Trash included).
+- Each row's name and its questions / answers / solutions ticks post together with its **Save**. ↑ / ↓ reorder without JavaScript; once hydrated, rows can also be dragged by their handle.
+- **Delete** is offered, and allowed, only for a kind no Document uses, including files held by Add test's duplicate warning.
+- Nothing about kinds is cached. The Includes filters, the download menus' kind groups and the zips read the flags on every request, and Add test's kind dropdowns follow the order.
+
 ## Change log
 
 Every Admin write records what changed, before and after, and when, in the `change_log` table, through `server::change_log`. Entries are written inside the same transaction as the change:
@@ -172,6 +179,7 @@ state.pdf.wake();
 - `src/app.rs`: the Dioxus app (routes, pages, server functions), compiled for both server and WASM
 - `src/app/admin.rs`: the login and logout pages and the Admin menu
 - `src/app/add_test.rs`, `src/app/upload_rules.rs`: the Add test page, and the file rules it shares with the server (allowed types, kind guessing, Word+PDF pairing)
+- `src/app/document_kinds.rs`: the Document kinds page
 - `src/app/facet_values.rs`: the Facet values page
 - `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes

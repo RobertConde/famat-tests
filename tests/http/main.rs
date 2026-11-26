@@ -8,6 +8,7 @@ mod support;
 mod add_test;
 mod admin_login;
 mod bulk_download;
+mod document_kinds;
 mod documents;
 mod download_menu;
 mod download_names;

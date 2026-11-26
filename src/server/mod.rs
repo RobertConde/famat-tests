@@ -6,6 +6,7 @@ pub mod change_log;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod document_kinds;
 pub mod documents;
 pub mod download_name;
 pub mod facet_values;

@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 
 pub mod add_test;
 mod admin;
+pub mod document_kinds;
 pub mod facet_values;
 pub mod pdf;
 pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout};
+use document_kinds::DocumentKinds;
 use facet_values::FacetValues;
 use pdf::PdfProblems;
 
@@ -38,6 +40,8 @@ enum Route {
     PdfProblems {},
     #[route("/admin/facets?:facet")]
     FacetValues { facet: String },
+    #[route("/admin/document-kinds")]
+    DocumentKinds {},
 }
 
 #[component]
