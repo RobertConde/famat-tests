@@ -120,35 +120,116 @@ async fn add_test_refusals_arrive_whole_however_much_body_is_left() {
     app.add_test(&cookie, form, "publish").await;
 }
 
-// ------------------------------------------------------------- Upload PDF
+// ------------------------------------------- one-file posts over the limit
 
-/// An Upload PDF post of `len` bytes starting with `head`, for `document`.
-async fn upload_pdf(
-    app: &TestApp,
-    cookie: Option<&str>,
-    origin: &str,
-    csrf: &str,
-    document: &str,
-    head: &[u8],
+/// A post with one file: the text `fields`, `padding` bytes of a field the
+/// endpoint ignores, then `file`, named `name`, of `len` bytes starting
+/// with `head`.
+struct OneFile {
+    path: &'static str,
+    fields: Vec<(&'static str, String)>,
+    padding: u64,
+    file: &'static str,
+    name: &'static str,
+    head: &'static [u8],
     len: u64,
-) -> reqwest::Result<reqwest::Response> {
-    let form = Form::new()
-        .text("csrf", csrf.to_owned())
-        .text("document", document.to_owned())
-        .text("return_to", "/admin/needs-review")
-        .part(
-            "pdf",
-            Part::stream_with_length(generated(head, len), len).file_name("scan.pdf"),
-        );
-    let mut request = app
-        .http
-        .post(app.url("/api/admin/documents/upload-pdf"))
-        .header("origin", origin);
-    if let Some(cookie) = cookie {
-        request = request.header("cookie", cookie);
-    }
-    request.multipart(form).send().await
 }
+
+impl OneFile {
+    fn padded(mut self, padding: u64) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    fn file(mut self, name: &'static str, head: &'static [u8], len: u64) -> Self {
+        (self.name, self.head, self.len) = (name, head, len);
+        self
+    }
+
+    fn field(mut self, name: &'static str, value: &str) -> Self {
+        for field in &mut self.fields {
+            if field.0 == name {
+                field.1 = value.to_owned();
+            }
+        }
+        self
+    }
+
+    async fn send(self, app: &TestApp, cookie: Option<&str>, origin: &str) -> reqwest::Result<reqwest::Response> {
+        let mut form = Form::new();
+        for (name, value) in self.fields {
+            form = form.text(name, value);
+        }
+        if self.padding > 0 {
+            form = form.part(
+                "padding",
+                Part::stream_with_length(generated(b"", self.padding), self.padding),
+            );
+        }
+        let form = form.part(
+            self.file.to_owned(),
+            Part::stream_with_length(generated(self.head, self.len), self.len).file_name(self.name.to_owned()),
+        );
+        let mut request = app.http.post(app.url(self.path)).header("origin", origin);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        request.multipart(form).send().await
+    }
+}
+
+/// A post over the limit: a whole 413 that closes the connection, whose
+/// refusal is returned.
+async fn too_large(response: reqwest::Result<reqwest::Response>, what: &str) -> String {
+    let closing = response
+        .as_ref()
+        .ok()
+        .and_then(|r| r.headers().get("connection").cloned());
+    let (status, body) = complete(response, what).await;
+    assert_eq!(status, 413, "{what}: {body}");
+    assert_eq!(
+        closing.as_ref().and_then(|v| v.to_str().ok()),
+        Some("close"),
+        "{what}: the rest is not read"
+    );
+    refusal(&body)
+}
+
+/// A one-file endpoint's posts over its limit (about 101 MB), each answered
+/// with a 413 that arrives whole, never "cut off". Which is reached first,
+/// the file's 100 MB or the post's limit, is a race (multer reads every
+/// chunk that is ready at once): both must answer the same.
+async fn one_file_posts_over_the_limit(app: &TestApp, cookie: &str, post: impl Fn() -> OneFile) {
+    let base = app.base_url.as_str();
+    // A file over 100 MB: either limit may be reached first.
+    let response = post()
+        .file("scan.pdf", b"%PDF-", 120 * MIB)
+        .send(app, Some(cookie), base)
+        .await;
+    assert_eq!(
+        too_large(response, "file over 100 MB").await,
+        "“scan.pdf” can’t be added: files can be at most 100 MB."
+    );
+    // The post's limit reached first, for certain: 2 MiB of other fields and
+    // then a file of exactly 100 MiB.
+    let response = post()
+        .padded(2 * MIB)
+        .file("scan.pdf", b"%PDF-", 100 * MIB)
+        .send(app, Some(cookie), base)
+        .await;
+    assert_eq!(
+        too_large(response, "limit reached in the file").await,
+        "“scan.pdf” can’t be added: files can be at most 100 MB."
+    );
+    // The post's limit reached before the file.
+    let response = post().padded(102 * MIB).send(app, Some(cookie), base).await;
+    assert_eq!(
+        too_large(response, "limit reached before the file").await,
+        "That is too much to upload: files can be at most 100 MB."
+    );
+}
+
+// ------------------------------------------------------------- Upload PDF
 
 #[tokio::test]
 async fn upload_pdf_refusals_arrive_whole_however_much_body_is_left() {
@@ -164,49 +245,48 @@ async fn upload_pdf_refusals_arrive_whole_however_much_body_is_left() {
         .await
         .to_string();
     let base = app.base_url.as_str();
+    let post = || OneFile {
+        path: "/api/admin/documents/upload-pdf",
+        fields: vec![
+            ("csrf", csrf.clone()),
+            ("document", document.clone()),
+            ("return_to", "/admin/needs-review".to_owned()),
+        ],
+        padding: 0,
+        file: "pdf",
+        name: "scan.pdf",
+        head: b"%PDF-",
+        len: TRAILING,
+    };
 
     for _ in 0..TIMES {
-        let response = upload_pdf(&app, None, base, &csrf, &document, b"%PDF-", TRAILING).await;
+        let response = post().send(&app, None, base).await;
         let (status, body) = complete(response, "anonymous").await;
         assert_eq!(status, 401, "anonymous: {body}");
 
-        let response = upload_pdf(&app, Some(&cookie), base, &foreign, &document, b"%PDF-", TRAILING).await;
+        let response = post().field("csrf", &foreign).send(&app, Some(&cookie), base).await;
         let (status, body) = complete(response, "foreign token").await;
         assert_eq!(status, 403, "foreign token: {body}");
 
-        let response = upload_pdf(&app, Some(&cookie), EVIL, &csrf, &document, b"%PDF-", TRAILING).await;
+        let response = post().send(&app, Some(&cookie), EVIL).await;
         let (status, body) = complete(response, "Origin").await;
         assert_eq!(status, 403, "Origin: {body}");
 
-        let response = upload_pdf(&app, Some(&cookie), base, &csrf, &document, b"PK\x03\x04", TRAILING).await;
+        let response = post()
+            .file("scan.pdf", b"PK\x03\x04", TRAILING)
+            .send(&app, Some(&cookie), base)
+            .await;
         let (status, body) = complete(response, "not a PDF").await;
         assert_eq!(status, 415, "not a PDF: {body}");
         assert_eq!(refusal(&body), "“scan.pdf” is not a PDF.");
 
-        let response = upload_pdf(&app, Some(&cookie), base, &csrf, "999999", b"%PDF-", TRAILING).await;
+        let response = post().field("document", "999999").send(&app, Some(&cookie), base).await;
         let (status, body) = complete(response, "unknown Document").await;
         assert_eq!(status, 404, "unknown Document: {body}");
         assert_eq!(refusal(&body), "D999999 does not exist.");
     }
 
-    // Over the whole post's limit (about 101 MB): the server stops reading
-    // there, but the refusal still arrives.
-    let response = upload_pdf(&app, Some(&cookie), base, &csrf, &document, b"%PDF-", 120 * MIB).await;
-    let closing = response
-        .as_ref()
-        .ok()
-        .and_then(|r| r.headers().get("connection").cloned());
-    let (status, body) = complete(response, "size").await;
-    assert_eq!(
-        closing.as_ref().and_then(|v| v.to_str().ok()),
-        Some("close"),
-        "the rest is not read"
-    );
-    assert_eq!(status, 413, "size: {body}");
-    assert_eq!(
-        refusal(&body),
-        "“scan.pdf” can’t be added: files can be at most 100 MB."
-    );
+    one_file_posts_over_the_limit(&app, &cookie, post).await;
 
     assert!(app.change_log().await.is_empty(), "nothing changed");
     let keys = app.stored_keys().await;
@@ -214,4 +294,71 @@ async fn upload_pdf_refusals_arrive_whole_however_much_body_is_left() {
         !keys.contains(&format!("documents/{document}/pdf")),
         "no PDF was stored: {keys:?}"
     );
+}
+
+// ------------------------------------------------------- Replace original
+
+#[tokio::test]
+async fn replace_original_refusals_arrive_whole_however_much_body_is_left() {
+    let app = TestApp::start().await;
+    let cookie = app.admin().await;
+    let other = app.log_in().await;
+    let csrf = app.csrf_on("/logout", Some(&cookie)).await;
+    let foreign = app.csrf_on("/logout", Some(&other)).await;
+    let test = app.insert_test(&NewTest::known()).await;
+    let pdf = sample_pdf(2000);
+    let document = app.insert_document(&[test], NewDocument::pdf("Test", &pdf)).await;
+    let base = app.base_url.as_str();
+    let post = || OneFile {
+        path: "/api/admin/documents/replace-original",
+        fields: vec![
+            ("csrf", csrf.clone()),
+            ("test", test.to_string()),
+            ("document", document.to_string()),
+        ],
+        padding: 0,
+        file: "original",
+        name: "Better.pdf",
+        head: b"%PDF-",
+        len: TRAILING,
+    };
+
+    for _ in 0..TIMES {
+        let response = post().send(&app, None, base).await;
+        let (status, body) = complete(response, "anonymous").await;
+        assert_eq!(status, 401, "anonymous: {body}");
+
+        let response = post().field("csrf", &foreign).send(&app, Some(&cookie), base).await;
+        let (status, body) = complete(response, "foreign token").await;
+        assert_eq!(status, 403, "foreign token: {body}");
+
+        let response = post().send(&app, Some(&cookie), EVIL).await;
+        let (status, body) = complete(response, "Origin").await;
+        assert_eq!(status, 403, "Origin: {body}");
+
+        let response = post()
+            .file("setup.exe", b"MZ", TRAILING)
+            .send(&app, Some(&cookie), base)
+            .await;
+        let (status, body) = complete(response, "type").await;
+        assert_eq!(status, 415, "type: {body}");
+        assert!(refusal(&body).starts_with("“setup.exe” can’t be added"), "type: {body}");
+
+        let response = post().field("document", "999999").send(&app, Some(&cookie), base).await;
+        let (status, body) = complete(response, "unknown Document").await;
+        assert_eq!(status, 404, "unknown Document: {body}");
+        assert_eq!(refusal(&body), "D999999 does not exist or is in the Trash.");
+    }
+
+    one_file_posts_over_the_limit(&app, &cookie, post).await;
+
+    assert!(app.change_log().await.is_empty(), "nothing changed");
+    // The Original is still the one it had.
+    let original = app
+        .get(&format!("/tests/{test}/documents/{document}/original"))
+        .await
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(original.as_ref(), pdf.as_slice());
 }

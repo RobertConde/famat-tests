@@ -185,7 +185,7 @@ pub async fn document_tests(form: Form<DocumentTestsForm>) -> Result<Response, S
 #[post("/api/admin/documents/replace-original",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(axum::extract::DefaultBodyLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
 pub async fn replace_original(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::test_edit::replace_original(&state, &headers, form).await
 }
@@ -196,7 +196,7 @@ pub async fn replace_original(form: MultipartFormData) -> Result<Response, Serve
 #[post("/api/admin/tests/add-files",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(axum::extract::DefaultBodyLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
 pub async fn add_files(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::test_edit::add_files(&state, &headers, form).await
 }

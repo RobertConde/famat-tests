@@ -11,7 +11,7 @@
 
 use axum::{
     body::Bytes,
-    extract::multipart::Field,
+    extract::multipart::{Field, MultipartError},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
@@ -23,7 +23,7 @@ use super::{Review, enqueue};
 use crate::{
     app::{
         pdf::{PDF_PROBLEMS, PdfDocument, PdfProblemsPage, RetryFailedForm, RetryPdfForm},
-        upload_rules::{MAX_FILE_BYTES, size_refusal},
+        upload_rules::{MAX_FILE_BYTES, POST_SIZE_REFUSAL, size_refusal},
     },
     server::{
         AppState, auth,
@@ -31,6 +31,7 @@ use crate::{
         documents::escape_html,
         internal_error,
         storage::{FileRole, PutError},
+        upload,
     },
 };
 
@@ -213,7 +214,7 @@ pub async fn upload(
         let field = match form.next_field().await {
             Ok(Some(field)) => field,
             Ok(None) => break refusal(StatusCode::BAD_REQUEST, "Choose a PDF to upload.", &back),
-            Err(_) => break refusal(StatusCode::BAD_REQUEST, "The upload was cut off. Try again.", &back),
+            Err(e) => break unreadable(&e, None, &back),
         };
         match (field.name().unwrap_or_default(), field.file_name()) {
             ("pdf", Some(name)) if !name.is_empty() => {
@@ -221,8 +222,14 @@ pub async fn upload(
                 break receive(state, &document, &back, name, field).await?;
             }
             ("pdf", _) => break refusal(StatusCode::BAD_REQUEST, "Choose a PDF to upload.", &back),
-            ("document", None) => document = field.text().await.unwrap_or_default(),
-            ("return_to", None) => back = return_to(&field.text().await.unwrap_or_default()),
+            ("document", None) => match field.text().await {
+                Ok(text) => document = text,
+                Err(e) => break unreadable(&e, None, &back),
+            },
+            ("return_to", None) => match field.text().await {
+                Ok(text) => back = return_to(&text),
+                Err(e) => break unreadable(&e, None, &back),
+            },
             _ => {}
         }
     };
@@ -262,13 +269,7 @@ async fn receive(
         match field.chunk().await {
             Ok(Some(chunk)) => head.extend_from_slice(&chunk),
             Ok(None) => break,
-            Err(_) => {
-                return Ok(refusal(
-                    StatusCode::BAD_REQUEST,
-                    "The upload was cut off. Try again.",
-                    back,
-                ));
-            }
+            Err(e) => return Ok(unreadable(&e, Some(&name), back)),
         }
     }
     if !head.starts_with(b"%PDF-") {
@@ -287,8 +288,7 @@ async fn receive(
         .await
         .map_err(internal_error)?;
 
-    let body =
-        futures::stream::iter([Ok::<_, axum::extract::multipart::MultipartError>(Bytes::from(head))]).chain(field);
+    let body = futures::stream::iter([Ok::<_, MultipartError>(Bytes::from(head))]).chain(field);
     let key = state.storage.document_key(id, FileRole::Pdf);
     let stored = match state
         .storage
@@ -301,7 +301,7 @@ async fn receive(
             requeue_if_preparing(state, id).await;
             return Ok(match e {
                 PutError::TooLarge => refusal(StatusCode::PAYLOAD_TOO_LARGE, &size_refusal(&name), back),
-                PutError::Body(_) => refusal(StatusCode::BAD_REQUEST, "The upload was cut off. Try again.", back),
+                PutError::Body(e) => unreadable(&e, Some(&name), back),
                 PutError::Storage(e) => return Err(internal_error(e)),
             });
         }
@@ -417,6 +417,16 @@ fn return_to(posted: &str) -> String {
 }
 
 /// A refusal shown to the Admin as a page, after which nothing changed.
+/// The post could not be read to its end: a 413 if it went over the limit
+/// (the file it was reading, `name`, if any, is named), otherwise a 400.
+fn unreadable(e: &MultipartError, name: Option<&str>, back: &str) -> Response {
+    if !upload::over_limit(e) {
+        return refusal(StatusCode::BAD_REQUEST, "The upload was cut off. Try again.", back);
+    }
+    let message = name.map_or_else(|| POST_SIZE_REFUSAL.to_owned(), size_refusal);
+    refusal(StatusCode::PAYLOAD_TOO_LARGE, &message, back)
+}
+
 fn refusal(status: StatusCode, message: &str, back: &str) -> Response {
     let message = escape_html(message);
     let back = escape_html(back);

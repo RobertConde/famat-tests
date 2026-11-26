@@ -28,6 +28,13 @@
 //! ```
 //!
 //! and can then return from anywhere without reading the rest itself.
+//!
+//! An endpoint must also tell the limit apart from a cut-off upload. When the
+//! body reaches the limit, reading the next field fails just as it does when
+//! the client goes away. And a file over its own size limit can reach the
+//! body limit before the endpoint has counted enough of it, because multer
+//! reads every chunk that is ready at once: which of the two comes first is
+//! a race. [`over_limit`] tells them apart, so both answer 413.
 
 use std::{
     convert::Infallible,
@@ -40,8 +47,8 @@ use std::{
 
 use axum::{
     body::{Body, BodyDataStream, Bytes},
-    extract::{DefaultBodyLimit, Request},
-    http::{HeaderValue, header},
+    extract::{DefaultBodyLimit, Request, multipart::MultipartError},
+    http::{HeaderValue, StatusCode, header},
     response::Response,
 };
 use futures::{Stream, StreamExt};
@@ -56,6 +63,13 @@ pub const MAX_BODY_BYTES: usize = MAX_UPLOAD_BYTES;
 
 /// How long a body over the limit is still read after it was answered.
 pub const LINGER: Duration = Duration::from_secs(10);
+
+/// Whether reading a multipart body failed because the body reached its
+/// limit (axum's length limit, or multer's own) rather than because the
+/// upload was cut off. An endpoint answers it with a 413, never "try again".
+pub fn over_limit(e: &MultipartError) -> bool {
+    e.status() == StatusCode::PAYLOAD_TOO_LARGE
+}
 
 /// A layer for a multipart server function: a body limit of `max` bytes,
 /// and the body read to its end (or to `max`) before the answer is sent.

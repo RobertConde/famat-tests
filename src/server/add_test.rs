@@ -39,6 +39,7 @@ use super::{
     facet_values::{self, FacetValueList, LISTED_FACETS},
     internal_error,
     storage::{FileRole, PutError},
+    upload,
 };
 use crate::app::{
     add_test::{AddTestPage, DocumentSummary, FacetOptions, FinishForm, PendingDocument, PendingUpload, TestSummary},
@@ -191,7 +192,7 @@ impl Refusal {
     }
 
     pub(super) fn multipart(e: MultipartError) -> Self {
-        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        if upload::over_limit(&e) {
             Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "That is too much to upload at once: add at most 1 GB of files at a time.",

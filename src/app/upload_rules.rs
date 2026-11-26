@@ -48,6 +48,11 @@ pub fn type_refusal(file_name: &str) -> String {
     format!("“{file_name}” can’t be added: only {ALLOWED_TYPES} files are allowed.")
 }
 
+/// A one-file post (Upload PDF, Replace original) over its limit before its
+/// file was reached.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub const POST_SIZE_REFUSAL: &str = "That is too much to upload: files can be at most 100 MB.";
+
 pub fn size_refusal(file_name: &str) -> String {
     format!("“{file_name}” can’t be added: files can be at most 100 MB.")
 }

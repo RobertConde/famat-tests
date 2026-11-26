@@ -22,15 +22,13 @@
 //! Unticking Needs review clears its comment too, so a stale reason never
 //! outlives the flag.
 //!
-//! Multipart refusals after the CSRF check read the rest of the body first
-//! ([`add_test::drain`]), so the browser is still listening when the page
-//! arrives. #47 is making that one shared helper for every early rejection;
-//! switch the `drain` calls here to it.
+//! Both multipart endpoints take `server::upload::UploadLimit`, so every
+//! refusal reaches the browser whole, however much of the body is left.
 
 use std::collections::HashMap;
 
 use axum::{
-    extract::multipart::Field,
+    extract::multipart::{Field, MultipartError},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -45,6 +43,7 @@ use super::{
     facet_values::FacetValueList,
     internal_error, pdf,
     storage::{FileRole, PutError},
+    upload,
 };
 use crate::app::{
     test_edit::{
@@ -609,7 +608,7 @@ pub async fn replace_original(
         let field = match form.next_field().await {
             Ok(Some(field)) => field,
             Ok(None) => break Err(refuse(StatusCode::BAD_REQUEST, "Choose a file to upload.", test)),
-            Err(e) => break Err(Refusal::multipart(e).back_to(back_or_home(test), "Back to the Test")),
+            Err(e) => break Err(unreadable(e, None, test)),
         };
         match (field.name().unwrap_or_default(), field.file_name()) {
             ("original", Some(name)) if !name.is_empty() => {
@@ -617,22 +616,36 @@ pub async fn replace_original(
                 break receive_original(state, test, &document, name, field).await;
             }
             ("original", _) => break Err(refuse(StatusCode::BAD_REQUEST, "Choose a file to upload.", test)),
-            ("test", None) => test = parse_id(&field.text().await.unwrap_or_default()),
-            ("document", None) => document = field.text().await.unwrap_or_default(),
+            ("test", None) => match field.text().await {
+                Ok(text) => test = parse_id(&text),
+                Err(e) => break Err(unreadable(e, None, test)),
+            },
+            ("document", None) => match field.text().await {
+                Ok(text) => document = text,
+                Err(e) => break Err(unreadable(e, None, test)),
+            },
             _ => {}
         }
     };
-    match outcome {
-        Ok(location) => Ok(auth::see_other(&location, None)),
-        Err(refusal) => {
-            add_test::drain(&mut form).await;
-            Ok(refusal.response())
-        }
-    }
+    // The rest of the body is read before a refusal goes out (`server::upload`).
+    Ok(match outcome {
+        Ok(location) => auth::see_other(&location, None),
+        Err(refusal) => refusal.response(),
+    })
 }
 
 fn back_or_home(test: Option<i64>) -> String {
     test.map_or_else(|| "/".to_owned(), edit_path)
+}
+
+/// The post could not be read to its end: a 413 if it went over the limit
+/// (the file it was reading, `name`, if any, is named), otherwise a 400.
+fn unreadable(e: MultipartError, name: Option<&str>, test: Option<i64>) -> Refusal {
+    if !upload::over_limit(&e) {
+        return Refusal::multipart(e).back_to(back_or_home(test), "Back to the Test");
+    }
+    let message = name.map_or_else(|| upload_rules::POST_SIZE_REFUSAL.to_owned(), size_refusal);
+    refuse(StatusCode::PAYLOAD_TOO_LARGE, message, test)
 }
 
 /// The file's row, before or after, as the change log shows it.
@@ -677,7 +690,7 @@ async fn receive_original(
         .await
         .map_err(|e| match e {
             PutError::TooLarge => refuse(StatusCode::PAYLOAD_TOO_LARGE, size_refusal(&name), test),
-            PutError::Body(e) => Refusal::multipart(e).back_to(back_or_home(test), "Back to the Test"),
+            PutError::Body(e) => unreadable(e, Some(&name), test),
             PutError::Storage(e) => Refusal::internal(e),
         })?;
 
@@ -786,8 +799,8 @@ pub async fn add_files(
     let documents = match planned {
         Ok(documents) => documents,
         Err(refusal) => {
+            // The rest of the body is read first (`server::upload`).
             upload.discard(state).await;
-            add_test::drain(&mut form).await;
             return Ok(refusal.back_to(back_or_home(test), "Back to the Test").response());
         }
     };
