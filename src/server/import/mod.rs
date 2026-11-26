@@ -22,7 +22,10 @@ mod csv;
 mod load;
 mod plan;
 mod sources;
-mod tidy;
+// Old search URLs are translated with the import's tidying (`super::legacy`).
+pub(crate) mod tidy;
+
+pub(crate) use sources::RawLabels;
 
 use std::{collections::BTreeMap, fmt::Write, path::PathBuf};
 

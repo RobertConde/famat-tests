@@ -173,7 +173,7 @@ impl Params {
 
 /// The search page's URL for `query` at `page` with `selected` Tests: only
 /// the filters in use, so links stay short.
-fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
+pub(super) fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
     let page = page.to_string();
     let mut pairs: Vec<(&str, &str)> = [
         ("year", &query.year),
@@ -218,7 +218,7 @@ fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
 /// The search with each Facet value written by its current name, so a
 /// search by a former name (or in another case) shows its value chosen in
 /// the dropdown and links with the name it has now.
-fn current_names(mut query: SearchQuery, values: &FacetValueList) -> SearchQuery {
+pub(super) fn current_names(mut query: SearchQuery, values: &FacetValueList) -> SearchQuery {
     for (facet, raw) in [
         ("month", &mut query.month),
         ("competition", &mut query.competition),
