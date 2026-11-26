@@ -1,0 +1,9 @@
+File Number,File Type,Year,Comp Type,Comp Month,Division,Test,Host,Label Source,Confidence,Evidence,Note,Duplicate Of,Hidden
+768,Test,1999,Invitationals,January,Algebra I,(Team),Berkeley Prep,AI,high,"p1: ""Berkeley Prep Invitational, January 1999 - Algebra I Team Round""; no worked answers","sheet said Solutions, file is the Test",,
+770,Solutions,2000,Invitationals,January,Algebra II,(Individual),Berkeley Prep,AI,medium,"p1 footer: ""(c) 2000 Berkeley Prep""",year from the file,,
+1162,Answers,1989,Nationals,-,Theta,(Individual),MAO,AI,high,"p1: ""1989 National Convention Answers"" columns Theta / Alpha / Mu",master key: one row per Test,,
+1162,Answers,1989,Nationals,-,Precalculus/Alpha,(Individual),MAO,AI,high,"p1: ""1989 National Convention Answers"" columns Theta / Alpha / Mu",master key: one row per Test,,
+1162,Answers,1989,Nationals,-,Calculus/Mu,(Individual),MAO,AI,high,"p1: ""1989 National Convention Answers"" columns Theta / Alpha / Mu",master key: one row per Test,,
+3911,Solutions,1997,States,-,Calculus/Mu,Applications,FAMAT,AI,high,"p1 (scan): ""1997 FAMAT State Convention / Solutions: Mu Applications  Level: Mu""",,,
+7631,Test,2012,Regionals,March,Algebra II,(Team),FAMAT,AI,high,"p1: ""March Regional 2012, Algebra II Team""","sheet said February; the file says March",,
+10300,Test,2011,Invitationals,November,Statistics,(Individual),Hagerty,AI,medium,"p1: ""2011 Hagerty Fall Invitational - Statistics Individual""","new values: Host ""Hagerty"", Comp Month ""November""",,
