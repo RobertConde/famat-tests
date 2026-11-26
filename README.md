@@ -133,6 +133,16 @@ What it does with the inputs:
 - **Delete** is offered, and allowed, only for a kind no Document uses, including files held by Add test's duplicate warning.
 - Nothing about kinds is cached. The Includes filters, the download menus' kind groups and the zips read the flags on every request, and Add test's kind dropdowns follow the order.
 
+## Old URLs
+
+The old PHP site's URLs redirect with a 301 (`server::legacy`):
+
+- `scripts/download.php?tid=N` → `/documents/N/pdf`
+- `docs/<N> <name>`, a file in the old listing → `/documents/N/original`. `docs/` itself → the search page.
+- `index.php?year=…&category=…&level=…&style=…&host=…&submit=…` → the same search. The old form also submitted it to `/`, so `/` with `category`, `level`, `style` or `submit` redirects too. `category` "Invitationals - January" becomes `competition=Invitational&month=January`, `level` becomes `division_level` and `style` becomes `test_type`. The values are tidied as the import tidies them, `?` and `-` become Unknown, and then each one is written by its current name. A name that is no value passes through.
+
+A `tid` that names no Published Document redirects to the search page with a 302, since it may be published later.
+
 ## Change log
 
 Every Admin write records what changed, before and after, and when, in the `change_log` table, through `server::change_log`. Entries are written inside the same transaction as the change:

@@ -14,6 +14,7 @@ mod download_menu;
 mod download_names;
 mod facet_values;
 mod import;
+mod old_urls;
 mod pdf_conversion;
 mod pdf_queue;
 mod search_page;

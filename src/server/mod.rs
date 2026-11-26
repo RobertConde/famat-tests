@@ -11,6 +11,7 @@ pub mod documents;
 pub mod download_name;
 pub mod facet_values;
 pub mod import;
+pub mod legacy;
 pub mod pdf;
 pub mod search;
 pub mod storage;
@@ -63,6 +64,8 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
         .route("/documents/{id}/pdf", get(documents::pdf_of_first_test))
         .route("/documents/{id}/original", get(documents::original_of_first_test))
         .route("/healthz", get(health))
+        .merge(legacy::routes())
+        .layer(middleware::from_fn(legacy::old_search_at_root))
         .layer(middleware::from_fn(auth::same_origin_writes))
         .layer(Extension(state)))
 }
