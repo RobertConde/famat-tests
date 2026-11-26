@@ -129,7 +129,7 @@ pub async fn add_test_page(added: String, pending: String) -> Result<AddTestPage
 #[post("/api/admin/tests",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(axum::extract::DefaultBodyLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
 pub async fn add_test(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::add_test::upload(&state, &headers, form).await
 }

@@ -45,6 +45,9 @@ zip = { version = "2.4", default-features = false, optional = true }
 cfb = { version = "0.16", optional = true }
 tempfile = { version = "3", optional = true }
 libc = { version = "0.2", optional = true }
+# The upload body layer (server::upload).
+tower-layer = { version = "0.3", optional = true }
+tower-service = { version = "0.3", optional = true }
 
 [features]
 default = []
@@ -75,6 +78,8 @@ server = [
     "dep:cfb",
     "dep:tempfile",
     "dep:libc",
+    "dep:tower-layer",
+    "dep:tower-service",
 ]
 
 [dev-dependencies]

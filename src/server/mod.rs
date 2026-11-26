@@ -19,6 +19,7 @@ pub mod search;
 pub mod storage;
 pub mod test_edit;
 pub mod trash;
+pub mod upload;
 pub mod zip;
 
 use axum::{

@@ -161,7 +161,7 @@ impl AddTestForm {
         for (name, body) in self.files {
             let part = match body {
                 Body::Bytes(bytes) => Part::bytes(bytes),
-                Body::Generated(len) => Part::stream_with_length(generated(len), len),
+                Body::Generated(len) => Part::stream_with_length(generated(&[], len), len),
             };
             form = form.part(
                 "files",
@@ -175,13 +175,21 @@ impl AddTestForm {
     }
 }
 
-/// `len` bytes of a repeating pattern, produced a MiB at a time.
-fn generated(len: u64) -> reqwest::Body {
-    const CHUNK: u64 = 1024 * 1024;
-    let chunks = len.div_ceil(CHUNK);
+/// `len` bytes of a repeating pattern after `prefix` (counted in `len`),
+/// produced a MiB at a time as they are sent rather than held.
+pub fn generated(prefix: &[u8], len: u64) -> reqwest::Body {
+    const CHUNK: usize = 1024 * 1024;
+    let pattern: Vec<u8> = (0..CHUNK).map(|b| (b % 251) as u8).collect();
+    let prefix = prefix.to_vec();
+    assert!(prefix.len() as u64 <= len.min(CHUNK as u64));
+    let chunks = len.div_ceil(CHUNK as u64);
     reqwest::Body::wrap_stream(stream::iter((0..chunks).map(move |i| {
-        let size = CHUNK.min(len - i * CHUNK) as usize;
-        Ok::<_, std::io::Error>((0..size).map(|b| (b % 251) as u8).collect::<Vec<u8>>())
+        let size = (CHUNK as u64).min(len - i * CHUNK as u64) as usize;
+        let mut chunk = pattern[..size].to_vec();
+        if i == 0 {
+            chunk[..prefix.len()].copy_from_slice(&prefix);
+        }
+        Ok::<_, std::io::Error>(chunk)
     })))
 }
 
@@ -208,10 +216,23 @@ impl TestApp {
     /// Submit the Add test form by pressing **Save hidden** (`"hidden"`) or
     /// **Publish** (`"publish"`).
     pub async fn submit_add_test(&self, cookie: &str, form: AddTestForm, save: &str) -> reqwest::Response {
-        self.http
-            .post(self.url("/api/admin/tests"))
-            .header("origin", &self.base_url)
-            .header("cookie", cookie)
+        self.submit_add_test_as(Some(cookie), &self.base_url, form, save).await
+    }
+
+    /// Submit the Add test form with a session cookie (if given) from a page
+    /// whose origin is `origin`.
+    pub async fn submit_add_test_as(
+        &self,
+        cookie: Option<&str>,
+        origin: &str,
+        form: AddTestForm,
+        save: &str,
+    ) -> reqwest::Response {
+        let mut request = self.http.post(self.url("/api/admin/tests")).header("origin", origin);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        request
             .multipart(form.multipart(save))
             .send()
             .await

@@ -193,7 +193,9 @@ pub async fn csrf_for(state: &AppState, headers: &HeaderMap) -> Result<String, s
 /// token.
 pub async fn same_origin_writes(request: Request, next: Next) -> Response {
     if !request.method().is_safe() && !same_origin(&request) {
-        return refuse(StatusCode::FORBIDDEN, FORBIDDEN_MESSAGE);
+        // Read the body first, so the refusal of an upload reaches the client.
+        let refusal = refuse(StatusCode::FORBIDDEN, FORBIDDEN_MESSAGE);
+        return super::upload::answer_after_draining(request.into_body(), super::upload::MAX_BODY_BYTES, refusal).await;
     }
     next.run(request).await
 }
