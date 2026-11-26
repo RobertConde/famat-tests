@@ -1,6 +1,7 @@
 //! Reading the import's inputs, exactly as they are: the students' sheet,
-//! the AI labels, the docs export and the legacy SQL dump. Nothing is tidied
-//! here ([`super::tidy`] does that).
+//! the AI labels, the docs export and the legacy SQL dump, plus the
+//! Documents unpacked from bundle zips, the attach decisions and the AI's
+//! review flags. Nothing is tidied here ([`super::tidy`] does that).
 
 use std::{
     collections::BTreeMap,
@@ -22,6 +23,14 @@ pub struct Inputs {
     pub docs: PathBuf,
     /// `doralmao_famat.sql`, for each old Test's `test_id`.
     pub legacy_sql: PathBuf,
+    /// `data/labels/unpacked.csv`: the Documents unpacked from bundle zips.
+    pub unpacked: PathBuf,
+    /// `data/unpacked/`, which unpacked.csv's paths are relative to.
+    pub unpacked_dir: PathBuf,
+    /// `data/labels/attach-{1,2}.out.csv`: the attach decisions.
+    pub attach: Vec<PathBuf>,
+    /// `data/labels/review-core.csv`: the Documents the AI flagged.
+    pub review: PathBuf,
 }
 
 /// Everything read from the inputs.
@@ -34,6 +43,14 @@ pub struct Sources {
     pub stray_names: Vec<String>,
     /// The old site's Tests.
     pub legacy_tests: Vec<LegacyTest>,
+    /// The Documents unpacked from bundle zips (their labels are in `rows`).
+    pub unpacked: Vec<UnpackedDocument>,
+    /// Every file under the unpacked directory, listed or not.
+    pub unpacked_files: Vec<SourceFile>,
+    /// The attach decisions, in file order.
+    pub decisions: Vec<Decision>,
+    /// The Documents the AI flagged for review, with their flags.
+    pub review: Vec<ReviewFlag>,
 }
 
 impl Sources {
@@ -46,11 +63,25 @@ impl Sources {
             read_docs(&inputs.docs).with_context(|| format!("reading {}", inputs.docs.display()))?;
         let legacy_tests =
             read_legacy_sql(&inputs.legacy_sql).with_context(|| format!("reading {}", inputs.legacy_sql.display()))?;
+        let (unpacked_rows, unpacked) = read_unpacked(&inputs.unpacked, &inputs.unpacked_dir)
+            .with_context(|| format!("reading {}", inputs.unpacked.display()))?;
+        rows.extend(unpacked_rows);
+        let unpacked_files = list_unpacked(&inputs.unpacked_dir)
+            .with_context(|| format!("reading {}", inputs.unpacked_dir.display()))?;
+        let mut decisions = Vec::new();
+        for path in &inputs.attach {
+            decisions.extend(read_decisions(path).with_context(|| format!("reading {}", path.display()))?);
+        }
+        let review = read_review(&inputs.review).with_context(|| format!("reading {}", inputs.review.display()))?;
         Ok(Self {
             rows,
             files,
             stray_names,
             legacy_tests,
+            unpacked,
+            unpacked_files,
+            decisions,
+            review,
         })
     }
 }
@@ -232,6 +263,9 @@ pub struct SourceFile {
     pub path: PathBuf,
     /// The whole file name, e.g. `766 1999 Test.pdf`.
     pub file_name: String,
+    /// How the reconciliation report names it: its name in the docs export,
+    /// or `unpacked/<path>` for a file unpacked from a bundle.
+    pub shown: String,
     /// The extension, lower case without the dot; empty when there is none.
     pub extension: String,
     pub byte_size: u64,
@@ -253,17 +287,11 @@ fn read_docs(dir: &Path) -> anyhow::Result<(BTreeMap<i64, SourceFile>, Vec<Strin
             stray.push(file_name);
             continue;
         };
-        let extension = Path::new(&file_name)
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            // "5544 Matrices & Vectors Solutions" has no extension, not a
-            // " Solutions" one.
-            .filter(|e| !e.contains(' '))
-            .unwrap_or_default();
         let file = SourceFile {
             path: entry.path(),
+            extension: extension_of(&file_name),
             file_name: file_name.clone(),
-            extension,
+            shown: file_name.clone(),
             byte_size: metadata.len(),
         };
         if let Some(other) = files.insert(tid, file) {
@@ -272,6 +300,242 @@ fn read_docs(dir: &Path) -> anyhow::Result<(BTreeMap<i64, SourceFile>, Vec<Strin
     }
     stray.sort();
     Ok((files, stray))
+}
+
+/// A file name's extension, lower case without the dot; empty when there is
+/// none.
+fn extension_of(file_name: &str) -> String {
+    Path::new(file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        // "5544 Matrices & Vectors Solutions" has no extension, not a
+        // " Solutions" one.
+        .filter(|e| !e.contains(' '))
+        .unwrap_or_default()
+}
+
+// ----------------------------------------------------------------- unpacked
+
+/// A Document unpacked from a bundle zip of the docs export.
+#[derive(Clone, Debug)]
+pub struct UnpackedDocument {
+    /// Its new `tid` (10364–10394 in the real data).
+    pub tid: i64,
+    /// The `tid` of the bundle zip it came out of.
+    pub bundle: i64,
+    pub original: SourceFile,
+    /// The PDF that came with it in the bundle, if any.
+    pub pdf: Option<SourceFile>,
+}
+
+/// `unpacked.csv`: like the AI labels (one row per Document per Test), plus
+/// the bundle zip, and the paths of the Original and of any PDF that came
+/// with it, relative to `dir`.
+fn read_unpacked(path: &Path, dir: &Path) -> anyhow::Result<(Vec<LabelRow>, Vec<UnpackedDocument>)> {
+    let records = read_csv(path)?;
+    let Some((header, records)) = records.split_first() else {
+        bail!("the file is empty");
+    };
+    let mut required = LABEL_COLUMNS.to_vec();
+    required.extend(["Source Zip", "Original Path", "PDF Path"]);
+    let columns = Columns::new(header, &required)?;
+    let (mut rows, mut documents) = (Vec::new(), Vec::<UnpackedDocument>::new());
+    for record in records.iter().filter(|r| !r.is_blank()) {
+        let line = record.line;
+        let raw = columns.get(record, "File Number").trim();
+        let tid: i64 = raw
+            .parse()
+            .with_context(|| format!("line {line}: File Number {raw:?} is not a number"))?;
+        let zip = columns.get(record, "Source Zip").trim();
+        let bundle = zip
+            .split_once(' ')
+            .and_then(|(tid, _)| tid.parse().ok())
+            .with_context(|| format!("line {line}: Source Zip {zip:?} does not start with a tid"))?;
+        let file = |column: &str| -> anyhow::Result<Option<SourceFile>> {
+            let relative = columns.get(record, column).trim();
+            if relative.is_empty() {
+                return Ok(None);
+            }
+            let path = dir.join(relative);
+            let metadata =
+                std::fs::metadata(&path).with_context(|| format!("line {line}: {column} {}", path.display()))?;
+            let file_name = Path::new(relative)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Ok(Some(SourceFile {
+                extension: extension_of(&file_name),
+                file_name,
+                shown: format!("unpacked/{relative}"),
+                path,
+                byte_size: metadata.len(),
+            }))
+        };
+        let original =
+            file("Original Path")?.with_context(|| format!("line {line}: File Number {tid} has no Original Path"))?;
+        let pdf = file("PDF Path")?;
+        match documents.iter().find(|d| d.tid == tid) {
+            Some(seen) if seen.original.path != original.path || seen.bundle != bundle => {
+                bail!("line {line}: File Number {tid} has another file or bundle than on an earlier row")
+            }
+            Some(_) => {}
+            None => documents.push(UnpackedDocument {
+                tid,
+                bundle,
+                original,
+                pdf,
+            }),
+        }
+        rows.push(LabelRow {
+            file_number: tid,
+            source: LabelSource::Ai,
+            line,
+            labels: columns.labels(record),
+            ai: Some(AiColumns {
+                confidence: columns.get(record, "Confidence").to_owned(),
+                evidence: columns.get(record, "Evidence").to_owned(),
+                note: columns.get(record, "Note").to_owned(),
+                duplicate_of: String::new(),
+                hidden: String::new(),
+            }),
+        });
+    }
+    Ok((rows, documents))
+}
+
+/// Every file under the unpacked directory, by path.
+fn list_unpacked(dir: &Path) -> anyhow::Result<Vec<SourceFile>> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(at) = pending.pop() {
+        for entry in std::fs::read_dir(&at)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if file_name == ".DS_Store" {
+                continue;
+            }
+            let path = entry.path();
+            let relative = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy().into_owned();
+            files.push(SourceFile {
+                extension: extension_of(&file_name),
+                file_name,
+                shown: format!("unpacked/{relative}"),
+                path,
+                byte_size: metadata.len(),
+            });
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+// -------------------------------------------------------- attach decisions
+
+/// What the attach-checks decided about an uncatalogued file whose labels
+/// matched an existing Test.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecisionKind {
+    /// It belongs on the Test that holds these Documents.
+    Attach(Vec<i64>),
+    /// It is not the Test its labels matched, but a Test of its own.
+    NewTest,
+    /// It duplicates this Document.
+    DuplicateOf(i64),
+}
+
+#[derive(Clone, Debug)]
+pub struct Decision {
+    pub file_number: i64,
+    pub kind: DecisionKind,
+    pub reason: String,
+}
+
+/// `attach-N.out.csv`: `File Number, Decision, Test Documents, Confidence,
+/// Reason`, where Decision is `attach`, `new test` or `duplicate of <tid>`.
+fn read_decisions(path: &Path) -> anyhow::Result<Vec<Decision>> {
+    let records = read_csv(path)?;
+    let Some((header, records)) = records.split_first() else {
+        bail!("the file is empty");
+    };
+    let columns = Columns::new(header, &["File Number", "Decision", "Test Documents", "Reason"])?;
+    records
+        .iter()
+        .filter(|r| !r.is_blank())
+        .map(|record| {
+            let line = record.line;
+            let raw = columns.get(record, "File Number").trim();
+            let file_number = raw
+                .parse()
+                .with_context(|| format!("line {line}: File Number {raw:?} is not a number"))?;
+            let decision = columns.get(record, "Decision").trim();
+            let kind = match decision.to_lowercase().as_str() {
+                "attach" => {
+                    let tids = columns
+                        .get(record, "Test Documents")
+                        .split_whitespace()
+                        .map(|t| {
+                            t.parse()
+                                .with_context(|| format!("line {line}: Test Documents has {t:?}"))
+                        })
+                        .collect::<anyhow::Result<Vec<i64>>>()?;
+                    if tids.is_empty() {
+                        bail!("line {line}: attach, but no Test Documents");
+                    }
+                    DecisionKind::Attach(tids)
+                }
+                "new test" => DecisionKind::NewTest,
+                other => match other.strip_prefix("duplicate of").map(str::trim) {
+                    Some(tid) => DecisionKind::DuplicateOf(
+                        tid.parse()
+                            .with_context(|| format!("line {line}: {decision:?} names no tid"))?,
+                    ),
+                    None => bail!("line {line}: Decision {decision:?} is not attach, new test or duplicate of <tid>"),
+                },
+            };
+            Ok(Decision {
+                file_number,
+                kind,
+                reason: columns.get(record, "Reason").trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
+// ------------------------------------------------------------- review flags
+
+/// A Document the AI labelling pass flagged for an Admin to check.
+#[derive(Clone, Debug)]
+pub struct ReviewFlag {
+    pub file_number: i64,
+    /// e.g. `low confidence | AI changed sheet: File Type 'Test'→'Solutions'`
+    pub flags: String,
+}
+
+/// `review-core.csv`: `File Number, Flags, …`.
+fn read_review(path: &Path) -> anyhow::Result<Vec<ReviewFlag>> {
+    let records = read_csv(path)?;
+    let Some((header, records)) = records.split_first() else {
+        bail!("the file is empty");
+    };
+    let columns = Columns::new(header, &["File Number", "Flags"])?;
+    records
+        .iter()
+        .filter(|r| !r.is_blank())
+        .map(|record| {
+            let raw = columns.get(record, "File Number").trim();
+            Ok(ReviewFlag {
+                file_number: raw
+                    .parse()
+                    .with_context(|| format!("line {}: File Number {raw:?} is not a number", record.line))?,
+                flags: columns.get(record, "Flags").trim().to_owned(),
+            })
+        })
+        .collect()
 }
 
 // --------------------------------------------------------------- legacy SQL

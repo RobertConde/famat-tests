@@ -1,0 +1,4 @@
+File Number,Decision,Test Documents,Confidence,Reason
+3415,attach,3414,high,"same header 'GEMINI / FAMAT State Convention 2001'; questions match 3414's solutions"
+3455,duplicate of 5937,,high,byte-identical (same MD5) to 5937 in the candidate Test
+3623,duplicate of 5642,,high,"PDF version of 5642 'BC Calculus SOLUTIONS, FAMAT State Convention 2005' (.doc)"

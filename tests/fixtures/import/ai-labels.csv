@@ -7,3 +7,11 @@ File Number,File Type,Year,Comp Type,Comp Month,Division,Test,Host,Label Source,
 3911,Solutions,1997,States,-,Calculus/Mu,Applications,FAMAT,AI,high,"p1 (scan): ""1997 FAMAT State Convention / Solutions: Mu Applications  Level: Mu""",,,
 7631,Test,2012,Regionals,March,Algebra II,(Team),FAMAT,AI,high,"p1: ""March Regional 2012, Algebra II Team""","sheet said February; the file says March",,
 10300,Test,2011,Invitationals,November,Statistics,(Individual),Hagerty,AI,medium,"p1: ""2011 Hagerty Fall Invitational - Statistics Individual""","new values: Host ""Hagerty"", Comp Month ""November""",,
+1176,Answers,1989,Nationals,-,Theta,(Individual),MAO,AI,high,"byte-identical to 1162","copy of the master key 1162 filed next to the Theta Test",1162,yes
+3415,Test,2001,States,-,,Gemini,FAMAT,AI,medium,"p1 ""GEMINI / FAMAT State Convention 2001""","L1: unstated division 'Open' cleared",,
+3455,Test,2001,States,-,Open,Analytic Geometry,FAMAT,AI,medium,"p1 ""Analytic Geometry / FAMAT State convention 2001""",,,
+3623,Solutions,2005,States,-,Calculus/Mu,BC Calculus,FAMAT,AI,high,"p1 header: ""BC Calculus SOLUTIONS FAMAT State Convention 2005""",,,
+3915,Solutions,1998,States,-,Calculus/Mu,Applications,FAMAT,AI,medium,"p1 (scan): ""Solutions for Mu, Mu Level / FAMAT State Convention 1998""","Header says ""Mu Test"", not ""Mu Applications""",,
+3916,Test,1998,States,-,Calculus/Mu,Applications,FAMAT,AI,medium,"p1 (scan): ""FAMAT State Convention  Mu Test  1998""","Header says ""Mu Test"", not ""Mu Applications""",,
+5617,,0,?,-,?,,-,AI,low,"p1: unreadable","broken: OLE container corrupt (98% zero bytes); textutil and LibreOffice give only garbage",,
+6606,Other,2010,States,-,Calculus/Mu,Region Bowl,FAMAT,AI,high,"p1: a blank answer form","sheet said Solutions: file is a blank answer form, no questions or answers",,yes

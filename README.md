@@ -92,7 +92,14 @@ The server reads its configuration from the environment:
 
 ## Importing the old archive
 
-`famat import` builds the archive from the old site's data: the students' sheet, the AI labels, the docs export and the old SQL dump (all kept outside git). Check what it would do first; `--dry-run` only reads the inputs and prints the summary:
+`famat import` builds the archive from the old site's data, all kept outside git:
+
+- the students' sheet and the AI labels
+- the docs export and the old SQL dump
+- the Documents unpacked from bundle zips
+- the attach decisions and the AI's review flags
+
+Check what it would do first. `--dry-run` only reads the inputs, prints the summary and writes the reconciliation report:
 
 ```sh
 scripts/with-dev-env.sh cargo run --features server -- import \
@@ -100,14 +107,28 @@ scripts/with-dev-env.sh cargo run --features server -- import \
   --ai-labels data/labels/ai-labels.csv \
   --docs "<the docs export>" \
   --legacy-sql doralmao_famat.sql \
+  --unpacked data/labels/unpacked.csv \
+  --unpacked-dir data/unpacked \
+  --attach data/labels/attach-1.out.csv \
+  --attach data/labels/attach-2.out.csv \
+  --review data/labels/review-core.csv \
+  --report import-report.txt \
   --dry-run
 ```
 
 Without `--dry-run` it replaces the whole archive:
 
-- Every file streams into Garage, and Garage's copy is read back and checked against the source's size and SHA-256 before anything in Postgres changes.
+- Every file streams into Garage: each Original, plus each supplied PDF. Garage's copy is read back and checked against the source's size and SHA-256 before anything in Postgres changes.
 - Then, in one transaction, the archive tables are wiped and rebuilt, and the ID sequences move past the imported IDs (Tests after 3706, Documents after 10394). Objects under `documents/` that the import didn't write are then deleted.
+- Every Original being prepared gets a PDF conversion job (the backfill). A running server's workers pick them up within seconds; otherwise the server converts them once it starts.
 - It can run again and again until an Admin changes something. From the first change log entry on, it refuses before touching anything.
+
+The reconciliation report goes to stdout (its summary and any problems) and to `--report` (all of it, default `import-report.txt`):
+
+- **Source files:** a line for each file of the docs export and of the unpacked directory. Each one was imported, imported Hidden, imported as a supplied PDF, dropped or failed, and the line says why.
+- **Old Tests:** each old Test is either kept with its Documents, or the line says where each of its Documents went.
+- **Garage and PDFs:** every object matched its source, Garage holds nothing else, and the conversion queue has a job for each Original being prepared.
+- **Problems:** anything missing, failed or unaccounted for, and inputs that disagree.
 
 What it does with the inputs:
 
@@ -115,6 +136,18 @@ What it does with the inputs:
 - Values are tidied: `?`, `-`, blank and year `0` become unknown. Month is not applicable for State, National and Mail-in. Event names become singular. Test type parentheses are dropped. Washington becomes State with Host Washington Mu Alpha Theta.
 - Calculus/Mu "Applications" becomes Mu Applications or Calculus Applications, from the file name, the AI evidence or the file's bytes. Undecided ones become Calculus Applications and get Needs review.
 - Documents with identical labels form one Test. A Test keeps the old `test_id` of the old Test it shares the most Documents with. Documents keep their `tid`.
+- A Document with rows for several Tests, such as a Master Key, is one Document on each of them.
+- **Hidden** with a note: duplicates (`duplicate of <tid>`, from `Duplicate Of` and the attach decisions), broken files (an AI note starting "broken"), and non-test files (`Hidden` yes). A Test with no Published Document of a known kind, or with neither Year nor Competition, is Hidden by the publish rule.
+- **Dropped:** `.lnk` shortcuts, and the bundle zips named in `unpacked.csv`. Their Documents are imported from the unpacked directory instead, and any PDF that came with one is its supplied PDF. Any other zip (6293) stays a zip, not convertible.
+- **Attach decisions:**
+  - `attach` puts the Document on the Test holding the Documents it names.
+  - `new test` keeps it off the old Test its labels match. If it has no other Test, it gets a Test of its own.
+  - `duplicate of` hides it. When that "duplicate" is a PDF and the Original is a Word or PowerPoint file, it is the Original's supplied PDF (3623/3624 and 3732/3733), not a Document of its own.
+- **Needs review**, one comment line per reason:
+  - the flags in `review-core.csv`
+  - unpacked.csv notes starting "needs review"
+  - the attach-checks' mislabels (#10)
+- PDF status: `ready` for a PDF or a supplied PDF. `preparing` for anything the converter takes (Word, PowerPoint, OpenDocument, RTF, images). Otherwise `not_convertible`. A file with no extension has its type read from its contents.
 - Display orders are seeded as in the spec.
 - The fixture set the tests use, `tests/fixtures/import/`, shows each input's format.
 
@@ -194,7 +227,7 @@ state.pdf.wake();
 - `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, the PDF queue (`pdf/`), and plain axum routes such as downloads
-- `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan, and loading it
+- `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan and its special cases, loading it, and the reconciliation report
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)
 - `tests/fixtures/import/`: the synthetic inputs the import tests run on

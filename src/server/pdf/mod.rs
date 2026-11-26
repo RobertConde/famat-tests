@@ -30,6 +30,7 @@ use std::sync::Arc;
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::sync::Notify;
 
+pub use convert::{convertible, office};
 pub use queue::start;
 
 /// A job is tried at most this often: once, plus one retry.
