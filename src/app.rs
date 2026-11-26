@@ -11,18 +11,22 @@ use serde::{Deserialize, Serialize};
 pub mod add_test;
 mod admin;
 pub mod bulk_edit;
+pub mod change_log;
 pub mod document_kinds;
 pub mod facet_values;
 pub mod pdf;
 pub mod test_edit;
+pub mod trash;
 pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout, admin_session};
 use bulk_edit::{BULK_EDIT_PATH, BulkEdit};
+use change_log::ChangeLog;
 use document_kinds::DocumentKinds;
 use facet_values::FacetValues;
 use pdf::{PDF_PROBLEMS, PdfProblems};
 use test_edit::EditTest;
+use trash::Trash;
 
 use crate::download::{
     BULK_ZIP_PATH, Contents, Format, GroupCounts, KindGroup, MAX_BULK_TESTS, selection_value, zip_href,
@@ -50,6 +54,10 @@ enum Route {
     FacetValues { facet: String },
     #[route("/admin/document-kinds")]
     DocumentKinds {},
+    #[route("/admin/trash")]
+    Trash {},
+    #[route("/admin/change-log?:entity&:id&:page")]
+    ChangeLog { entity: String, id: String, page: String },
 }
 
 #[component]

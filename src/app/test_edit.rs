@@ -26,6 +26,7 @@ use super::{
     admin::AdminMenu,
     bulk_edit::MergeInto,
     pdf::{self, PdfActions},
+    trash::{RemoveDocument, RemoveTest},
     upload_rules::ACCEPT,
 };
 
@@ -72,7 +73,7 @@ pub struct EditedDocument {
     pub original_bytes: i64,
     /// The size of its PDF, when it has one apart from the Original.
     pub pdf_bytes: Option<i64>,
-    /// Every Test it belongs to, by ID.
+    /// Every untrashed Test it belongs to, by ID.
     pub tests: Vec<i64>,
 }
 
@@ -263,6 +264,7 @@ pub fn EditTest(id: ReadSignal<i64>) -> Element {
             h2 { "Edit T{test.id}" }
             p { id: "description", class: "description", "{test.description}" }
             TestForm { test: test.clone(), csrf: csrf.clone() }
+            RemoveTest { test: test.id, csrf: csrf.clone() }
             h3 { id: "documents-heading", "Documents ({test.documents.len()})" }
             for document in test.documents.iter() {
                 DocumentEditor {
@@ -503,6 +505,9 @@ fn DocumentEditor(document: EditedDocument, test: i64, csrf: String, kinds: Vec<
                     }
                     button { r#type: "submit", name: "action", value: "attach", "Attach" }
                 }
+            }
+            div { class: "row-actions",
+                RemoveDocument { document: id, test, csrf: csrf.clone(), shared: !only_test }
             }
         }
     }

@@ -104,9 +104,10 @@ An Admin sees an **Edit** link on each result row, which opens the Test edit pag
 - **Each Document:** kind, label, Published/Hidden and Needs review. Saving sets its label source to Admin. Unticking Needs review clears its comment too.
 - **Retry PDF / Upload PDF:** the PDF problems page's forms.
 - **Replace original:** the same types and limit as Add test. The file streams over `documents/{id}/original` (a refused or cut-off upload leaves the old one), any PDF, made or supplied, is dropped, and the Document is queued for conversion afresh.
-- **Also on Tests…:** attach the Document to another untrashed Test by ID (`T123` or `123`), or detach it. It shows, and downloads under its own ID, on every Test it is on. Detaching it from its last Test is refused.
+- **Also on Tests…:** attach the Document to another untrashed Test by ID (`T123` or `123`), or detach it. It shows, and downloads under its own ID, on every Test it is on. Detaching it from its last Test outside the Trash is refused.
 - **+ Add files:** Add test's drop zone and rules (kinds, labels, Word+PDF pairs), adding Documents to this Test, hidden or published.
 - **Merge into…:** merge this Test into another typed by ID (see below).
+- **Remove test / Remove document:** moves it to the Trash.
 
 ## Bulk edit, merging and Needs review
 
@@ -117,6 +118,20 @@ An Admin's search also finds Hidden Tests, marked **Hidden** (their Documents ar
 - **Merge into…** merges one Test into another: from the bulk bar's **Merge…** (exactly two selected) or the Test edit page. Every Document of the merged Test moves onto the survivor, Trashed ones too. A Document already on both keeps one row, and one also on other Tests keeps them. The empty Test is Hidden and goes to the Trash (`trashed_at`). Each moved Document's `tests` is logged, and the merged Test's `merged_into`, `published` and `trashed`.
 
 Every one of these writes is an Admin-only, CSRF-checked native form post answered with a 303.
+
+## Trash
+
+**Remove** sets `trashed_at` and nothing else, so the item vanishes from search, downloads, zips and the Admin pages, and **Restore** on the Trash page (`/admin/trash`, logic in `server::trash`) brings it back exactly as it was, Published or Hidden. The Trash lists removed Tests and Documents, newest first. **Delete permanently** is offered only there: it deletes the rows and the Garage objects (Original and PDF), and logs each deleted record.
+
+Documents shared between Tests:
+
+- Removing a Test leaves its Documents as they are: they come back with it, and one also on another Test stays visible there. Removing a Document takes it off every Test it is on.
+- Deleting a Test permanently also deletes the Documents that are on no other Test, Trashed or not. One also on another Test (even a Trashed one) is only taken off it.
+- Deleting a Document permanently takes it off every Test, Trashed or not.
+- A Document whose Tests are all in the Trash can't be restored on its own (it would come back out of sight). Restore one of its Tests first.
+- A Test in the Trash doesn't count for **Also on Tests…**: the edit page doesn't list it, and a Document can't be detached from its last Test outside the Trash.
+- Deleting a Document locks its PDF job first, so a conversion storing its PDF finishes before the objects go, and one still running throws its result away. The objects are deleted before the transaction commits, so if Garage fails nothing is deleted and the item stays in the Trash.
+- An upload held by Add test's duplicate warning has no rows to delete. If the Test it matched is deleted, **Add these files to that Test instead** is refused, and it can still be saved as a new Test or discarded.
 
 ## Importing the old archive
 
@@ -206,6 +221,8 @@ A `tid` that names no Published Document redirects to the search page with a 302
 
 ## Change log
 
+The **Change log** page (`/admin/change-log`) lists every entry, newest first, one block per Admin action (the entries sharing `changed_at`), 50 actions a page. Each entry shows its record (`T12`, `D34`, `Facet value 7`, `Document kind 3`, linked to where it can be seen while it exists), the field, and before → after. It can be filtered by entity type and ID (`?entity=test&id=12`; an ID typed as `T12` or `D34` picks the type).
+
 Every Admin write records what changed, before and after, and when, in the `change_log` table, through `server::change_log`. Entries are written inside the same transaction as the change:
 
 ```rust
@@ -255,6 +272,7 @@ state.pdf.wake();
 - `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
 - `src/app/test_edit.rs`: the Test edit page
 - `src/app/bulk_edit.rs`: Edit selected and Merge into…
+- `src/app/trash.rs`, `src/app/change_log.rs`: the Trash page and its Remove buttons, and the Change log page
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, the PDF queue (`pdf/`), and plain axum routes such as downloads
 - `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan and its special cases, loading it, and the reconciliation report

@@ -38,6 +38,10 @@ _Avoid_: Provenance, author
 A flag on a Test or Document whose labels an Admin should check, with a free-text comment saying why. A Document whose PDF failed is flagged too.
 _Avoid_: Unverified, pending
 
+**Trash**:
+Where a removed Test or Document waits, out of sight everywhere, until an Admin restores it exactly as it was or deletes it permanently. Permanent deletion happens only from the Trash.
+_Avoid_: Recycle bin, archive, deleted
+
 **Original**:
 A Document file exactly as it was uploaded, kept alongside any PDF made from it.
 _Avoid_: Source file

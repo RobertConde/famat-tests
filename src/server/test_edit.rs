@@ -11,8 +11,8 @@
 //! - **Save document** ([`save_document`]): kind, label, Published/Hidden and
 //!   Needs review. Its label source becomes `admin`.
 //! - **Also on Tests…** ([`document_tests`]): attach a Document to another
-//!   untrashed Test, or detach it; detaching it from its only Test is
-//!   refused.
+//!   untrashed Test, or detach it; detaching it from its last untrashed
+//!   Test is refused (a Test in the Trash doesn't count).
 //! - **Replace original** ([`replace_original`]): the new file streams over
 //!   `documents/{id}/original`, its row changes, any PDF (made or supplied)
 //!   is dropped, and the Document is queued for conversion afresh.
@@ -166,7 +166,8 @@ async fn edited_test(db: &PgPool, id: i64) -> anyhow::Result<Option<EditedTest>>
                 coalesce(o.byte_size, 0) AS original_bytes,
                 p.byte_size AS pdf_bytes,
                 coalesce((SELECT array_agg(o2.test_id ORDER BY o2.test_id)
-                          FROM test_documents o2 WHERE o2.document_id = d.id), '{}') AS tests
+                          FROM test_documents o2 JOIN tests t2 ON t2.id = o2.test_id
+                          WHERE o2.document_id = d.id AND t2.trashed_at IS NULL), '{}') AS tests
          FROM test_documents td
          JOIN documents d      ON d.id = td.document_id
          JOIN document_kinds k ON k.id = d.kind_id
@@ -545,12 +546,22 @@ pub async fn document_tests(
             if !before.contains(&other) {
                 return Ok(Ok(back));
             }
-            if before.len() == 1 {
+            // A Test in the Trash doesn't count: the Document would be
+            // out of sight until that Test came back.
+            let others_untrashed: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM test_documents td JOIN tests t ON t.id = td.test_id
+                                WHERE td.document_id = $1 AND td.test_id <> $2 AND t.trashed_at IS NULL)",
+            )
+            .bind(id)
+            .bind(other)
+            .fetch_one(&mut **tx)
+            .await?;
+            if !others_untrashed {
                 return Ok(Err(refuse(
                     StatusCode::CONFLICT,
                     format!(
-                        "D{id} is only on T{other}, and a Document must stay on at least one Test. \
-                         Attach it to another Test first."
+                        "D{id} is on no other Test outside the Trash, and a Document must stay on at least \
+                         one. Attach it to another Test first, or Remove it."
                     ),
                     test,
                 )));

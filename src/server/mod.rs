@@ -4,6 +4,7 @@ pub mod add_test;
 pub mod auth;
 pub mod bulk_edit;
 pub mod change_log;
+pub mod change_log_page;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -17,6 +18,7 @@ pub mod pdf;
 pub mod search;
 pub mod storage;
 pub mod test_edit;
+pub mod trash;
 pub mod zip;
 
 use axum::{
