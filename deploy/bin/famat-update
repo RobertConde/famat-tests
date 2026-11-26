@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Update the FAMAT containers' images, rolling back an update that doesn't
+# get healthy. Run daily by famat-update.timer (Docker has no `podman
+# auto-update`, and Watchtower can't roll back).
+#
+#   famat-update                 postgres, app and cloudflared
+#   famat-update app             just the services named
+#
+# For each service:
+#   1. Pull its image (as the compose file, with any compose.override.yaml,
+#      names it). If the image ID is the one the container runs, stop here.
+#   2. Tag the running image famat-previous/<service>, then recreate only that
+#      service (--no-deps: nothing else restarts).
+#   3. Wait up to FAMAT_UPDATE_TIMEOUT seconds for its health check to pass
+#      (a service without one: running, without a restart, for
+#      FAMAT_UPDATE_STABLE seconds).
+#   4. If it isn't, tag the previous image back under the service's image
+#      name and recreate the service from it: the rollback. The new image's
+#      ID is remembered in $STATE_DIR, and later runs don't try it again;
+#      the next new image is tried as usual.
+#
+# Every outcome is logged (journalctl -u famat-update). The run exits non-zero
+# if anything failed or was rolled back, so the unit shows as failed.
+#
+# Settings (environment): FAMAT_DIR (default /etc/famat), FAMAT_UPDATE_TIMEOUT
+# (default 300), FAMAT_UPDATE_STABLE (default 30), FAMAT_UPDATE_STATE (default
+# /var/lib/famat-update).
+set -euo pipefail
+
+DIR="${FAMAT_DIR:-/etc/famat}"
+TIMEOUT="${FAMAT_UPDATE_TIMEOUT:-300}"
+STABLE="${FAMAT_UPDATE_STABLE:-30}"
+STATE_DIR="${FAMAT_UPDATE_STATE:-/var/lib/famat-update}"
+# Shared with famat-backup: an update never recreates Postgres mid-dump.
+LOCK_FILE=/run/famat.lock
+
+log() { echo "famat-update: $*"; }
+compose() { docker compose --project-directory "$DIR" "$@"; }
+short() { local id="${1#sha256:}"; echo "${id:0:12}"; }
+# image_of SERVICE: its image, as the compose files (with any override) name
+# it. (`config --images SERVICE` also lists its dependencies' images.)
+# --no-env-resolution keeps the secrets out of the output.
+image_of() {
+  compose config --no-env-resolution "$1" | awk -v svc="  $1:" '
+    $0 == "services:" { s = 1; next }
+    s && /^[^ ]/ { s = 0 }
+    s && /^  [^ ]/ { cur = $0 }
+    s && cur == svc && /^    image: / { print $2; exit }'
+}
+# digest IMAGE: its repository digest (repo@sha256:…), for the log.
+digest() {
+  docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$1" 2>/dev/null \
+    | grep -m1 -F "${1%:*}@" || true
+}
+
+# The container's state: "<status> <health> <restarts> <started at>".
+state() {
+  local cid
+  cid="$(compose ps -q "$1")"
+  [ -n "$cid" ] || { echo "missing none 0 -"; return; }
+  docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}}' "$cid"
+}
+
+# wait_healthy SERVICE: healthy within $TIMEOUT seconds?
+wait_healthy() {
+  local svc="$1" deadline=$((SECONDS + TIMEOUT)) since="" last=""
+  local status="" health="" restarts="" started=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    read -r status health restarts started < <(state "$svc")
+    if [ "$health" = healthy ]; then
+      return 0
+    fi
+    if [ "$health" = none ] && [ "$status" = running ]; then
+      # No health check: running, without restarting, for $STABLE seconds.
+      if [ "$last" != "$restarts $started" ]; then
+        last="$restarts $started"
+        since="$SECONDS"
+      elif [ $((SECONDS - since)) -ge "$STABLE" ]; then
+        return 0
+      fi
+    else
+      last=""
+    fi
+    sleep 5
+  done
+  log "$svc: $status, health $health, $restarts restarts after ${TIMEOUT}s"
+  return 1
+}
+
+update() { # update SERVICE: 0 up to date or updated, 1 failed or rolled back
+  local svc="$1" image cid old new prev bad_file="$STATE_DIR/$1.bad"
+
+  image="$(image_of "$svc")"
+  cid="$(compose ps -q "$svc")"
+  if [ -z "$cid" ]; then
+    log "$svc: not running; skipped"
+    return 0
+  fi
+  old="$(docker inspect -f '{{.Image}}' "$cid")"
+
+  if ! docker pull --quiet "$image" >/dev/null; then
+    log "$svc: FAILED to pull $image; still on $(short "$old")"
+    return 1
+  fi
+  new="$(docker image inspect -f '{{.Id}}' "$image")"
+
+  if [ "$new" = "$old" ]; then
+    log "$svc: up to date ($image, $(short "$old"))"
+    return 0
+  fi
+  if [ -f "$bad_file" ] && [ "$(cat "$bad_file")" = "$new" ]; then
+    # Keep the tag on the running image, so a restart or reboot uses it.
+    docker tag "$old" "$image"
+    docker rmi "$new" >/dev/null 2>&1 || true
+    log "$svc: $image is still $(short "$new"), which was rolled back before; kept $(short "$old")"
+    return 0
+  fi
+
+  log "$svc: updating $image $(short "$old") → $(short "$new") ($(digest "$image"))"
+  prev="$(docker image inspect -f '{{.Id}}' "famat-previous/$svc" 2>/dev/null || true)"
+  docker tag "$old" "famat-previous/$svc"
+  compose up --detach --no-deps --pull never "$svc"
+
+  if wait_healthy "$svc"; then
+    log "$svc: updated to $(short "$new"); healthy"
+    rm -f "$bad_file"
+    # Keep one previous image per service, for a rollback by hand.
+    if [ -n "$prev" ] && [ "$prev" != "$old" ] && [ "$prev" != "$new" ]; then
+      docker rmi "$prev" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  log "$svc: $(short "$new") NOT healthy within ${TIMEOUT}s; its last log lines:"
+  docker logs --tail 20 "$(compose ps -q "$svc")" 2>&1 | sed "s/^/  $svc: /" || true
+  log "$svc: rolling back to $(short "$old")"
+  mkdir -p "$STATE_DIR"
+  echo "$new" > "$bad_file"
+  docker tag "$old" "$image"
+  compose up --detach --no-deps --pull never "$svc"
+  docker rmi "$new" >/dev/null 2>&1 || true
+  if wait_healthy "$svc"; then
+    log "$svc: ROLLED BACK to $(short "$old"); healthy"
+  else
+    log "$svc: ROLLED BACK to $(short "$old"), but it is NOT healthy either"
+  fi
+  return 1
+}
+
+if ! systemctl is-active --quiet famat.service; then
+  log "famat.service is not active; nothing updated"
+  exit 0
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -w 21600 9; then
+  log "a backup has held $LOCK_FILE for 6 hours; nothing updated"
+  exit 1
+fi
+
+services=("$@")
+[ "${#services[@]}" -gt 0 ] || services=(postgres app cloudflared)
+
+failed=()
+for svc in "${services[@]}"; do
+  update "$svc" || failed+=("$svc")
+done
+
+if [ "${#failed[@]}" -gt 0 ]; then
+  log "failed or rolled back: ${failed[*]}"
+  exit 1
+fi
+log "done"

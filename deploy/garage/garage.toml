@@ -1,9 +1,9 @@
 # Single-node Garage for the FAMAT Test Bank. Installed to
 # /etc/famat/garage.toml and mounted read-only at /etc/garage.toml.
 #
-# No secrets here: rpc_secret comes from the famat-garage-rpc-secret Podman
-# secret (mounted as a file, GARAGE_RPC_SECRET_FILE), and the admin API is
-# not enabled. The bucket and key are made by deploy/garage/bootstrap.sh.
+# No secrets here: rpc_secret comes from GARAGE_RPC_SECRET in
+# /etc/famat/secrets/garage.env, and the admin API is not enabled. The bucket
+# and key are made by deploy/garage/bootstrap.sh.
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "sqlite"
@@ -13,11 +13,14 @@ metadata_auto_snapshot_interval = "6h"
 
 replication_factor = 1
 
-# Loopback only (famat-net.container explains why).
+# One node: RPC stays on the container's own loopback.
 rpc_bind_addr = "127.0.0.1:3901"
 rpc_public_addr = "127.0.0.1:3901"
 
 [s3_api]
 s3_region = "garage"
-api_bind_addr = "127.0.0.1:3900"
+# Inside the container, for the app and the backups' rclone on the internal
+# famat-backend network. Nothing is published on the host
+# (deploy/compose.yaml).
+api_bind_addr = "0.0.0.0:3900"
 root_domain = ".s3.garage.localhost"

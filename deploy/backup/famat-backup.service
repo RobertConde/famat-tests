@@ -1,7 +1,7 @@
 [Unit]
 Description=Nightly restic backup (FAMAT Test Bank, Nextcloud, WeBWorK)
 Wants=network-online.target
-After=network-online.target famat-app.service
+After=network-online.target famat.service
 
 [Service]
 Type=oneshot

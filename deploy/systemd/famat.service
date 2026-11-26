@@ -1,0 +1,38 @@
+# The FAMAT Test Bank: the Docker Compose project in /etc/famat
+# (deploy/compose.yaml). Starts on boot once Docker is up and the RAID is
+# mounted. `systemctl stop famat` removes the containers; the data stays on
+# the RAID.
+#
+# The data is on /mnt/raid. If the RAID isn't mounted, this unit refuses to
+# start, so an empty database is never created on the root disk:
+# - RequiresMountsFor= waits for the mount (mnt-raid.mount, from fstab), and
+#   fails this unit if the mount fails.
+# - AssertPathIsMountPoint= fails it if /mnt/raid is missing or is only a
+#   directory (no fstab entry, or not mounted).
+# - The compose file's binds never create a missing directory, which also
+#   covers a `docker compose up` by hand.
+
+[Unit]
+Description=FAMAT Test Bank (Docker Compose project famat)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/raid/famat
+AssertPathIsMountPoint=/mnt/raid
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/famat
+# Counted as started once Postgres, Garage and the app are healthy (the app
+# waits for the other two: depends_on). Then cloudflared, without waiting
+# for it: if Cloudflare can't be reached at boot, it keeps retrying on its
+# own, and `docker ps` shows it unhealthy meanwhile.
+ExecStart=/usr/bin/docker compose up --detach --wait --wait-timeout 300 app
+ExecStart=/usr/bin/docker compose up --detach
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=360
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

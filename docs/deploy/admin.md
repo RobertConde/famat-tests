@@ -1,6 +1,6 @@
 # Running `famat import` and `famat set-passcode` on the server
 
-Both are subcommands of the app's binary. On the server, `/usr/local/sbin/famat` (from `deploy/bin/famat`) runs them in a throwaway container from the app's image. That container is in `famat-net`'s network namespace with the app's secrets, so it reaches Postgres and Garage just as the app does. Run it as root, with the containers up.
+Both are subcommands of the app's binary. On the server, `/usr/local/sbin/famat` (from `deploy/bin/famat`) runs them in a throwaway container of the compose file's `app` service (`docker compose run --rm app …`). It has the app's image, environment and secrets, on the same `famat-backend` network, so it reaches Postgres and Garage just as the app does. Run it as root, with the containers up (`systemctl status famat`).
 
 ## `famat set-passcode`
 
@@ -70,8 +70,8 @@ Repeat steps 1 to 3 until the report is clean and a 20-Test spot check on `https
 To watch the PDF backfill:
 
 ```sh
-podman exec famat-postgres psql -U famat -c "select pdf_status, count(*) from documents group by 1"
-journalctl -u famat-app -f | grep -i pdf
+docker exec famat-postgres psql -U famat -c "select pdf_status, count(*) from documents group by 1"
+journalctl -t famat-app -f | grep -i pdf
 ```
 
 Failures land on the Admin's PDF problems page, `/admin/needs-review`.

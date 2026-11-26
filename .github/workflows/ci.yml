@@ -66,6 +66,30 @@ jobs:
       - name: Run the slow PDF conversion tests
         run: scripts/test.sh pdf_conversion -- --ignored
 
+  # The server's files (deploy/): the scripts pass shellcheck, and Compose
+  # accepts the compose file, with stand-in secrets.
+  deploy-files:
+    name: Deployment files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: shellcheck deploy/*.sh deploy/bin/* deploy/backup/famat-backup deploy/garage/bootstrap.sh
+      - name: docker compose config
+        run: |
+          dir="$(mktemp -d)"
+          cp deploy/compose.yaml deploy/garage/garage.toml "$dir"/
+          mkdir "$dir/secrets"
+          for f in db s3 garage tunnel; do echo "STAND_IN=1" > "$dir/secrets/$f.env"; done
+          docker compose --project-directory "$dir" config --quiet
+          docker compose --project-directory "$dir" config --services
+          # Nothing may be published on the host (the app trusts CF-Connecting-IP).
+          if docker compose --project-directory "$dir" config --no-env-resolution | grep -E '^\s+ports:'; then
+            echo "deploy/compose.yaml publishes a port" >&2
+            exit 1
+          fi
+
   wasm-client:
     name: WASM client builds
     runs-on: ubuntu-latest

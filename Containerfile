@@ -1,6 +1,6 @@
 # The app image: the famat server (and CLI) with LibreOffice for PDF
-# conversion. Deployment (Quadlet, secrets, health check) is in deploy/ and
-# docs/deploy/.
+# conversion. Deployment (Docker Compose, secrets, health check) is in
+# deploy/ and docs/deploy/.
 #
 #   podman build -t famat -f Containerfile .
 #   podman run --rm -p 8080:8080 -e DATABASE_URL=… -e S3_ENDPOINT=… … famat
@@ -33,8 +33,8 @@ FROM docker.io/library/debian:trixie-slim
 # LibreOffice without its GUI: Writer for Word, RTF and ODF, Impress for
 # PowerPoint. Metric-compatible fonts (Liberation for Times New Roman, Arial
 # and Courier New; Carlito for Calibri; Caladea for Cambria) keep page
-# breaks where Word put them. curl is for the health check (HealthCmd in
-# deploy/quadlet/famat-app.container).
+# breaks where Word put them. curl is for the health check (the app
+# service's healthcheck in deploy/compose.yaml).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libreoffice-writer-nogui \
