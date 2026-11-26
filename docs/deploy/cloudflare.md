@@ -1,13 +1,19 @@
 # Cloudflare: the tunnel and `tests.famat.org`
 
 ```text
-browser ─► Cloudflare edge ─► tunnel ─► cloudflared (famat-net) ─► app on 127.0.0.1:8080
-             famat.rconde.xyz            public hostname on the tunnel
-             tests.famat.org             Cloudflare for SaaS custom hostname,
-                                         fallback origin = famat.rconde.xyz
+browser ─► Cloudflare edge ─► tunnel "famat" ─► famat-cloudflared ─► http://app:8080
+             famat.rconde.xyz                     (a container in the       (famat-backend)
+             tests.famat.org                       Compose project famat)
+               │
+               └ famat.rconde.xyz: public hostname on the tunnel
+                 tests.famat.org: Cloudflare for SaaS custom hostname, fallback origin = famat.rconde.xyz
 ```
 
-Cloudflare terminates HTTPS. cloudflared dials out, so the server opens no ports. Two rules hold for every request:
+Cloudflare terminates HTTPS. cloudflared dials out, so the server opens no ports.
+
+**This is a tunnel of its own.** The server already runs a host `cloudflared` service with another tunnel. Leave that service, its `/etc/cloudflared/` and its tunnel's routes exactly as they are. Don't add the test bank's hostnames to it, and never run `cloudflared service install` on the host. The test bank's tunnel is run by the `famat-cloudflared` container, with the token from `/etc/famat/secrets/tunnel.env`.
+
+Two rules hold for every request:
 
 - **The Host header stays the visitor's hostname.** Never set an HTTP Host Header (`httpHostHeader`) or Origin Server Name override on the tunnel's routes. The app refuses any write whose `Origin` doesn't match `Host`, so a rewritten Host breaks every login and Admin form on the hostname that wasn't rewritten.
 - **`CF-Connecting-IP` is the client.** The login rate limit trusts it, which is safe only because the tunnel is the only way to the app.
@@ -18,15 +24,15 @@ Cloudflare also refuses any request over 100 MB on the Free and Pro plans, with 
 
 In the Cloudflare dashboard, open Zero Trust → Networks → Tunnels:
 
-1. Select **Create a tunnel**, then **Cloudflared**. Name it `famat`.
-2. On the install page, pick any OS. Copy the token, the long `eyJ…` string after `cloudflared service install`. Don't run the install command; the famat-cloudflared container runs cloudflared. On the server, run `deploy/create-secrets.sh` and paste the token when asked ([server-setup.md](server-setup.md), step 3).
+1. Select **Create a tunnel**, then **Cloudflared**. Name it `famat`. The existing tunnel in the list belongs to the host's `cloudflared`; don't open or edit it.
+2. On the install page, pick **Docker**. Copy the token, the long `eyJ…` string after `--token`. Don't run the install command anywhere; the `famat-cloudflared` container runs cloudflared. On the server, run `deploy/create-secrets.sh` and paste the token alone when asked ([server-setup.md](server-setup.md), step 4).
 3. Add a **public hostname** (in newer dashboards, a **published application route**):
    - Subdomain `famat`, domain `rconde.xyz`, path empty.
-   - Service type `HTTP`, URL `localhost:8080`.
+   - Service type `HTTP`, URL `app:8080`. `app` is the app's name on the Compose network, which cloudflared shares; `localhost` would be cloudflared's own container.
    - Additional application settings → HTTP Settings: leave **HTTP Host Header** empty.
 
-   Cloudflare creates the proxied DNS record `famat.rconde.xyz CNAME <tunnel-id>.cfargotunnel.com`.
-4. Once the containers are running, the tunnel shows **Healthy**. Check that `https://famat.rconde.xyz/healthz` answers `ok`.
+   Cloudflare creates the proxied DNS record `famat.rconde.xyz CNAME <tunnel-id>.cfargotunnel.com`. If it says a record already exists, check what it points to first: if it is the other tunnel's, stop and decide; don't overwrite it.
+4. Once the containers are running, the tunnel shows **Healthy**, and `docker ps` shows `famat-cloudflared` as `(healthy)`. Check that `https://famat.rconde.xyz/healthz` answers `ok`.
 
 Note the **tunnel ID**, a UUID shown on the tunnel's page, and the **account ID** from the dashboard URL or the zone's Overview page. Part 2 needs both.
 
@@ -54,15 +60,15 @@ curl -fsS -X PUT \
   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/cfd_tunnel/$TUNNEL_ID/configurations" \
   -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
   --data '{"config":{"ingress":[
-    {"hostname":"famat.rconde.xyz","service":"http://localhost:8080","originRequest":{}},
-    {"hostname":"tests.famat.org","service":"http://localhost:8080","originRequest":{}},
+    {"hostname":"famat.rconde.xyz","service":"http://app:8080","originRequest":{}},
+    {"hostname":"tests.famat.org","service":"http://app:8080","originRequest":{}},
     {"service":"http_status:404"}
   ]}}'
 ```
 
-This replaces the tunnel's whole route list, including the route from part 1, so keep both hostnames in it. Read it back with the same URL and `GET`. Within a few seconds, cloudflared logs `Updated to new configuration`.
+This replaces the `famat` tunnel's whole route list, including the route from part 1, so keep both hostnames in it. Check `TUNNEL_ID` is the `famat` tunnel's, not the other tunnel's: this call would replace that one's routes just the same. Read it back with the same URL and `GET`. Within a few seconds, `docker logs famat-cloudflared` shows `Updated to new configuration`.
 
-If Cloudflare rejects the `tests.famat.org` rule, make the last rule `{"service":"http://localhost:8080"}` instead. Every hostname that reaches the tunnel then goes to the app.
+If Cloudflare rejects the `tests.famat.org` rule, make the last rule `{"service":"http://app:8080"}` instead. Every hostname that reaches the `famat` tunnel then goes to the app.
 
 ### 2c. Add the custom hostname
 
@@ -110,6 +116,6 @@ curl -sS https://tests.famat.org/healthz        # ok
 curl -sSI https://tests.famat.org/ | grep -i '^server'   # cloudflare
 ```
 
-Then log in on `https://tests.famat.org/login` to check the Origin check accepts it, and add the Better Stack monitor for `https://tests.famat.org/healthz` ([server-setup.md](server-setup.md), step 8).
+Then log in on `https://tests.famat.org/login` to check the Origin check accepts it, and add the Better Stack monitor for `https://tests.famat.org/healthz` ([server-setup.md](server-setup.md), step 9).
 
 **Renewal:** the certificate renews every ~90 days. Once the CNAME is in place, Cloudflare may renew it over HTTP without new TXT values. If the dashboard ever shows a pending renewal with new TXT values, send FAMAT the new `_acme-challenge` value.

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Set up the single Garage node: give it a layout role, create the
-# bucket, and import the app's key from the Podman secrets. Idempotent: run it
-# after the first start, after a restore onto a new server, or any time.
+# Set up the single Garage node: give it a layout role, create the bucket,
+# and import the app's key from /etc/famat/secrets/s3.env. Idempotent: run it
+# after the first start, after a restore onto empty data directories, or any
+# time.
 #
-#   sudo deploy/garage/bootstrap.sh
+#   sudo famat-garage-bootstrap
 #
 # Settings (environment):
 #   GARAGE_CONTAINER  default famat-garage
@@ -11,20 +12,19 @@
 #                     uses it only to balance nodes, but it must be set.
 #   GARAGE_ZONE       default dc1
 #   S3_BUCKET         default famat
-#   KEY_ID_SECRET     default famat-s3-access-key-id
-#   KEY_SECRET_SECRET default famat-s3-secret-access-key
+#   FAMAT_SECRETS     default /etc/famat/secrets
 set -euo pipefail
 
 CONTAINER="${GARAGE_CONTAINER:-famat-garage}"
 CAPACITY="${GARAGE_CAPACITY:-500G}"
 ZONE="${GARAGE_ZONE:-dc1}"
 BUCKET="${S3_BUCKET:-famat}"
-KEY_ID_SECRET="${KEY_ID_SECRET:-famat-s3-access-key-id}"
-KEY_SECRET_SECRET="${KEY_SECRET_SECRET:-famat-s3-secret-access-key}"
+SECRETS="${FAMAT_SECRETS:-/etc/famat/secrets}"
 KEY_NAME=famat-app
 
-g() { podman exec -e RUST_LOG=warn "$CONTAINER" /garage "$@"; }
-secret() { podman secret inspect --showsecret --format '{{.SecretData}}' "$1"; }
+g() { docker exec -e RUST_LOG=warn "$CONTAINER" /garage "$@"; }
+# secret VAR: VAR's value in s3.env (read, not sourced).
+secret() { sed -n "s/^$1=//p" "$SECRETS/s3.env"; }
 
 echo "Waiting for Garage in $CONTAINER..."
 for _ in $(seq 1 60); do g status >/dev/null 2>&1 && break; sleep 1; done
@@ -48,13 +48,14 @@ else
   echo "Bucket $BUCKET: created."
 fi
 
-key_id="$(secret "$KEY_ID_SECRET")"
+key_id="$(secret S3_ACCESS_KEY_ID)"
+[ -n "$key_id" ] || { echo "No S3_ACCESS_KEY_ID in $SECRETS/s3.env (run deploy/create-secrets.sh)." >&2; exit 1; }
 if g key info "$key_id" >/dev/null 2>&1; then
   echo "Key $key_id: exists."
 else
   # Garage wants "GK" + 24 hex digits and a 64-hex-digit secret, which is
   # what deploy/create-secrets.sh generates.
-  g key import --yes -n "$KEY_NAME" "$key_id" "$(secret "$KEY_SECRET_SECRET")" >/dev/null
+  g key import --yes -n "$KEY_NAME" "$key_id" "$(secret S3_SECRET_ACCESS_KEY)" >/dev/null
   echo "Key $key_id: imported."
 fi
 g bucket allow --read --write --owner "$BUCKET" --key "$key_id" >/dev/null

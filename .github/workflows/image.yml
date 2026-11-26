@@ -3,7 +3,7 @@ name: Image
 # Builds the release bundle, runs the HTTP suite against it, puts that same
 # bundle in the app image, checks the image starts and answers /healthz, and
 # (on main only) pushes it to ghcr.io/robertconde/famat-tests, where the
-# server's `podman auto-update` picks up :latest.
+# server's famat-update.timer picks up :latest (deploy/bin/famat-update).
 #
 # amd64 only: the server is amd64, and building the WASM client and server
 # under QEMU for arm64 would take far longer than the rest of CI.
@@ -77,7 +77,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # The image against the same Postgres and Garage: it must migrate,
-      # serve, and pass the health check the Quadlet unit runs.
+      # serve, and pass the health check deploy/compose.yaml runs.
       - name: Smoke-test the image
         run: |
           set -a; . ~/.cache/famat-dev/dev.env; set +a

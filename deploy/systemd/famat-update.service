@@ -1,0 +1,11 @@
+[Unit]
+Description=FAMAT Test Bank: update the app, Postgres and cloudflared images, with rollback
+Wants=network-online.target
+After=network-online.target famat.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/famat-update
+# The pulls, plus up to FAMAT_UPDATE_TIMEOUT (300 s) per recreated service,
+# twice if it rolls back, plus a wait for a running backup.
+TimeoutStartSec=8h

@@ -1,5 +1,0 @@
-# Garage data (the Originals and PDFs) for the FAMAT Test Bank. Backed up nightly by
-# famat-backup (as a pg_dump / an rclone copy, not as raw files).
-
-[Volume]
-VolumeName=famat-garage-data

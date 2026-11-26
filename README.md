@@ -62,7 +62,7 @@ CI (`.github/workflows/image.yml`) builds the bundle, runs the HTTP suite agains
 
 ## Deployment
 
-Production runs on Debian 13 as Podman Quadlet units, behind a Cloudflare Tunnel, with nightly restic backups. The files are in `deploy/`, and the runbooks (setup, Cloudflare, import, restore, upgrading) in `docs/deploy/`.
+Production runs on Debian 13 as a Docker Compose project managed by systemd, with its data on the server's RAID, behind its own Cloudflare Tunnel, with daily image updates that roll back on a failed health check and nightly restic backups. The files are in `deploy/`, and the runbooks (setup, Cloudflare, import, restore, upgrading) in `docs/deploy/`.
 
 ## Configuration
 
@@ -286,5 +286,5 @@ state.pdf.wake();
 - `tests/fixtures/import/`: the synthetic inputs the import tests run on
 - `tests/fixtures/pdf/`: the files the PDF conversion tests convert
 - `Containerfile`: the app image
-- `deploy/`, `docs/deploy/`: the production units, backup script and runbooks
+- `deploy/`, `docs/deploy/`: the production compose file, systemd units, update and backup scripts, and runbooks
 - `scripts/`, `dev/`: local Postgres + Garage, and the run, test and bundle commands

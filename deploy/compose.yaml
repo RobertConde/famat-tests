@@ -1,0 +1,192 @@
+# The FAMAT Test Bank on the server: Docker Compose project "famat".
+# Installed to /etc/famat/compose.yaml by deploy/install.sh and run by
+# famat.service (deploy/systemd/famat.service). Relative paths are relative
+# to /etc/famat.
+#
+#   cloudflared ──► app:8080 ──► postgres:5432
+#                            └─► garage:3900 (S3)
+#
+# Nothing is published on the host: there is no `ports:` anywhere, and there
+# must never be. The only way in is the Cloudflare Tunnel, which cloudflared
+# dials out to. The app trusts CF-Connecting-IP for its login rate limit, so
+# nothing but cloudflared may reach it.
+#
+# - famat-backend is an internal network: no route out, and nothing outside
+#   Docker's bridge can reach it. App, Postgres and Garage are only on it.
+# - famat-egress is cloudflared's way out to Cloudflare.
+#
+# Data is bind-mounted from the RAID, /mnt/raid/famat/. The binds never
+# create a missing directory (create_host_path: false), so with the RAID not
+# mounted the containers refuse to start instead of starting on an empty
+# database on the root disk. famat.service checks the mount as well.
+#
+# Secrets are root-only env files in /etc/famat/secrets/ (made by
+# deploy/create-secrets.sh), never in git. `docker compose config` prints
+# their values, so don't paste its output anywhere.
+#
+# Local changes (for example pinning the app's version) go in
+# /etc/famat/compose.override.yaml, which Compose merges in on its own
+# (docs/deploy/upgrading.md). install.sh never touches that file.
+
+name: famat
+
+x-logging: &logging
+  # The journal rotates them; `journalctl -t famat-app`, or `docker logs`.
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+
+services:
+  postgres:
+    container_name: famat-postgres
+    # Minor releases only (famat-update); a major upgrade needs a dump and
+    # restore (docs/deploy/upgrading.md).
+    image: docker.io/library/postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: famat
+      POSTGRES_DB: famat
+    # POSTGRES_PASSWORD, read only when the data directory is first created.
+    env_file: secrets/db.env
+    volumes:
+      - type: bind
+        source: /mnt/raid/famat/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+    shm_size: 256m
+    stop_grace_period: 60s
+    # Ready only once the real server answers on TCP (the image's first-start
+    # initialisation runs a socket-only server first).
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "famat", "-d", "famat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [backend]
+    logging: *logging
+
+  garage:
+    container_name: famat-garage
+    # Pinned: Garage has no moving tag per major version, so it is upgraded by
+    # hand (docs/deploy/upgrading.md).
+    image: docker.io/dxflrs/garage:v2.6.0
+    restart: unless-stopped
+    environment:
+      RUST_LOG: garage=info
+    # GARAGE_RPC_SECRET. Health check execs get the container's environment.
+    env_file: secrets/garage.env
+    volumes:
+      - type: bind
+        source: ./garage.toml
+        target: /etc/garage.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/raid/famat/garage/meta
+        target: /var/lib/garage/meta
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/raid/famat/garage/data
+        target: /var/lib/garage/data
+        bind:
+          create_host_path: false
+    healthcheck:
+      # Exec form: the image has no shell.
+      test: ["CMD", "/garage", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [backend]
+    logging: *logging
+
+  app:
+    container_name: famat-app
+    # Built by CI from every green main. famat-update.timer pulls it, and
+    # rolls back if the new one doesn't get healthy.
+    image: ghcr.io/robertconde/famat-tests:latest
+    restart: unless-stopped
+    # An init as PID 1, so SIGTERM stops the server at once.
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment:
+      # Inside the container; only famat-backend can reach it.
+      IP: 0.0.0.0
+      PORT: "8080"
+      # No password in the URL: sqlx takes it from PGPASSWORD (db.env).
+      DATABASE_URL: postgres://famat@postgres:5432/famat
+      S3_ENDPOINT: http://garage:3900
+      S3_REGION: garage
+      S3_BUCKET: famat
+      # The PDF queue: 2 LibreOffice conversions at once, 120 s each.
+      PDF_WORKERS: "2"
+      PDF_TIMEOUT_SECS: "120"
+    # PGPASSWORD; S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.
+    env_file: [secrets/db.env, secrets/s3.env]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "--max-time", "5", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      # Migrations run before the server listens.
+      start_period: 120s
+    networks: [backend]
+    logging: *logging
+
+  cloudflared:
+    container_name: famat-cloudflared
+    image: docker.io/cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    # A remotely managed tunnel: its routes are set in Cloudflare
+    # (docs/deploy/cloudflare.md), to http://app:8080, with no Host header
+    # override (the app refuses writes whose Origin doesn't match the Host).
+    # This is the test bank's own tunnel; the server's host cloudflared and
+    # its tunnel are separate and untouched.
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      # The metrics server (and /ready) on the container's own loopback only.
+      TUNNEL_METRICS: 127.0.0.1:20241
+    # TUNNEL_TOKEN.
+    env_file: secrets/tunnel.env
+    healthcheck:
+      # /ready: healthy once at least one connection to Cloudflare is up.
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [backend, egress]
+    logging: *logging
+
+  # Not started by `up` (a profile). The backups and restores run it:
+  #   docker compose run --rm -T -v DIR:/staging rclone sync :s3:famat /staging
+  rclone:
+    image: docker.io/rclone/rclone:1
+    profiles: [tools]
+    environment:
+      RCLONE_S3_PROVIDER: Other
+      RCLONE_S3_ENDPOINT: http://garage:3900
+      RCLONE_S3_REGION: garage
+      RCLONE_S3_FORCE_PATH_STYLE: "true"
+    # RCLONE_S3_ACCESS_KEY_ID and RCLONE_S3_SECRET_ACCESS_KEY.
+    env_file: secrets/s3.env
+    networks: [backend]
+    logging: *logging
+
+networks:
+  backend:
+    name: famat-backend
+    internal: true
+  egress:
+    name: famat-egress

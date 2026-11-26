@@ -1,34 +1,29 @@
 #!/usr/bin/env bash
 # Run a `famat` CLI command (import, set-passcode, --help) on the server, in a
-# one-off container from the app's image in famat-net's network namespace, so
-# it reaches Postgres and Garage on 127.0.0.1 with the same secrets as the app.
+# one-off container of the compose file's app service: the app's image, on
+# the famat-backend network, with the app's environment and secrets, so it
+# reaches Postgres and Garage just as the app does.
 #
 #   sudo famat set-passcode
 #   sudo famat --input /srv/famat/import import --sheet /input/sheet.csv … --dry-run
 #
 # --input DIR mounts DIR read-only at /input; give the command paths under
-# /input. Settings (environment): FAMAT_IMAGE (default the app unit's image,
-# ghcr.io/robertconde/famat-tests:latest), FAMAT_NET (default famat-net).
+# /input. Settings (environment): FAMAT_DIR (default /etc/famat, where the
+# compose file is).
 set -euo pipefail
 
-IMAGE="${FAMAT_IMAGE:-ghcr.io/robertconde/famat-tests:latest}"
-NET="${FAMAT_NET:-famat-net}"
+DIR="${FAMAT_DIR:-/etc/famat}"
 
 mounts=()
 if [ "${1:-}" = "--input" ]; then
   [ -d "${2:-}" ] || { echo "famat: --input needs a directory" >&2; exit 2; }
-  mounts=(-v "$(cd "$2" && pwd):/input:ro")
+  mounts=(--volume "$(cd "$2" && pwd):/input:ro")
   shift 2
 fi
 
+# A terminal only when there is one (set-passcode's no-echo prompt needs it);
+# piped input still reaches the command.
 tty=()
-[ -t 0 ] && tty=(-t)
+[ -t 0 ] && [ -t 1 ] || tty=(-T)
 
-exec podman run --rm -i "${tty[@]}" --network "container:$NET" \
-  -e DATABASE_URL=postgres://famat@127.0.0.1:5432/famat \
-  --secret famat-db-password,type=env,target=PGPASSWORD \
-  -e S3_ENDPOINT=http://127.0.0.1:3900 -e S3_REGION=garage -e S3_BUCKET=famat \
-  --secret famat-s3-access-key-id,type=env,target=S3_ACCESS_KEY_ID \
-  --secret famat-s3-secret-access-key,type=env,target=S3_SECRET_ACCESS_KEY \
-  "${mounts[@]}" \
-  "$IMAGE" "$@"
+exec docker compose --project-directory "$DIR" run --rm --no-deps "${tty[@]}" "${mounts[@]}" app "$@"

@@ -12,8 +12,9 @@ RESTIC_REPOSITORY=sftp:storagebox:famat-restic
 RESTIC_PASSWORD_FILE=/etc/famat/restic-password
 
 # Where the dumps and the Garage copy are written before restic reads them.
-# Needs room for a full copy of the Garage bucket.
-STAGING=/var/backups/famat-staging
+# Needs room for a full copy of the Garage bucket, so it is on the RAID. Its
+# parent must exist: a backup never creates it on the root disk.
+STAGING=/mnt/raid/famat/backup-staging
 
 # Retention: 7 daily / 4 weekly / 12 monthly, per part (host + tag).
 KEEP_DAILY=7
@@ -31,30 +32,47 @@ BETTERSTACK_HEARTBEAT_URL=
 
 # -------------------------------------------------------------- test bank
 FAMAT_ENABLED=1
-# These match deploy/quadlet/ and rarely change.
-#FAMAT_NET=famat-net
+# These match deploy/compose.yaml and rarely change.
+#FAMAT_DIR=/etc/famat
 #FAMAT_POSTGRES_CONTAINER=famat-postgres
 #FAMAT_DB_NAME=famat
 #FAMAT_S3_BUCKET=famat
-#RCLONE_IMAGE=docker.io/rclone/rclone:1
 
 # ---------------------------------------------------------------- Nextcloud
-# Set to 1 once the paths below match this server's Nextcloud.
+# Set to 1 once the commands and paths below match this server's Nextcloud.
+# docs/deploy/server-setup.md, step 8, shows how to find them.
 NEXTCLOUD_ENABLED=0
-# The occ command. For a container install, e.g.
-#   NEXTCLOUD_OCC=(podman exec -u www-data nextcloud php occ)
-NEXTCLOUD_OCC=(sudo -u www-data php /var/www/nextcloud/occ)
+
+# The occ command. Nextcloud in Docker (the official image; the container's
+# name from `docker ps`):
+#   NEXTCLOUD_OCC=(docker exec -u www-data <nextcloud container> php occ)
+# Installed natively:
+#   NEXTCLOUD_OCC=(sudo -u www-data php /var/www/nextcloud/occ)
+NEXTCLOUD_OCC=(docker exec -u www-data '<nextcloud container>' php occ)
+
 # A command that writes the database dump to stdout. The database name is
-# config.php's 'dbname'. As root, Debian's MariaDB needs no password (unix
-# socket auth). For PostgreSQL:
-#   NEXTCLOUD_DB_DUMP=(sudo -u postgres pg_dump nextcloud)
+# config.php's 'dbname' (`occ config:system:get dbname`).
+# - In the host's MariaDB (as root, Debian's MariaDB needs no password):
+#     NEXTCLOUD_DB_DUMP=(mysqldump --single-transaction --default-character-set=utf8mb4 nextcloud)
+# - In a MariaDB container: the single quotes make the password variable
+#   expand inside the container, from its own environment (check its name
+#   with `docker exec <db container> env`; MYSQL_ROOT_PASSWORD in older
+#   setups):
+#     NEXTCLOUD_DB_DUMP=(docker exec <db container> sh -c 'export MYSQL_PWD="$MARIADB_ROOT_PASSWORD"; exec mariadb-dump --single-transaction --default-character-set=utf8mb4 -uroot nextcloud')
+# - In a PostgreSQL container:
+#     NEXTCLOUD_DB_DUMP=(docker exec <db container> pg_dump -U nextcloud nextcloud)
 NEXTCLOUD_DB_DUMP=(mysqldump --single-transaction --default-character-set=utf8mb4 nextcloud)
-# Backed up while maintenance mode is on: 'datadirectory' from config.php,
-# and config/ (it holds the instance's secret and salt, needed to restore).
-NEXTCLOUD_PATHS=(/var/www/nextcloud/data /var/www/nextcloud/config)
+
+# Backed up while maintenance mode is on: the data directory and config/ (it
+# holds the instance's secret and salt, needed to restore), as paths on the
+# HOST. For a container, they are the Source of its mounts:
+#   docker inspect -f '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' <nextcloud container>
+# A named volume's Source is under /var/lib/docker/volumes/<name>/_data.
+NEXTCLOUD_PATHS=('<host path of the data directory>' '<host path of config/>')
 
 # ----------------------------------------------------------------- WeBWorK
-# Set to 1 once the paths below match this server's WeBWorK.
+# Set to 1 once the paths below match this server's WeBWorK (native: systemd
+# services and the host's MariaDB).
 WEBWORK_ENABLED=0
 # The database is $database_dsn's name in webwork2/conf/site.conf.
 WEBWORK_DB_DUMP=(mysqldump --single-transaction webwork)
