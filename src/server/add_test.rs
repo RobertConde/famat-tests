@@ -36,6 +36,7 @@ use super::{
     AppState, auth,
     change_log::{self, Change, Entity},
     documents::escape_html,
+    facet_values::{self, FacetValueList, LISTED_FACETS},
     internal_error,
     storage::{FileRole, PutError},
 };
@@ -43,15 +44,6 @@ use crate::app::{
     add_test::{AddTestPage, DocumentSummary, FacetOptions, FinishForm, PendingDocument, PendingUpload, TestSummary},
     upload_rules::{self, MAX_FILE_BYTES, Pairer, Placement, guess_kind, size_refusal, split_name},
 };
-
-/// The Facets with a value list: `(form field and Postgres facet, label)`.
-const LISTED_FACETS: [(&str, &str); 5] = [
-    ("month", "Month"),
-    ("competition", "Competition"),
-    ("division_level", "Division/Level"),
-    ("test_type", "Test type"),
-    ("host", "Host"),
-];
 
 /// Abandoned duplicate warnings are swept, with their files, after this.
 const PENDING_DAYS: i32 = 7;
@@ -389,11 +381,11 @@ async fn plan(state: &AppState, upload: &Upload) -> Result<Plan, Refusal> {
     let values = FacetValueList::load(&state.db).await.map_err(Refusal::internal)?;
     let facets = Facets {
         year: year_choice(upload)?,
-        month: values.choice(upload, "month", "Month")?,
-        competition: values.choice(upload, "competition", "Competition")?,
-        division_level: values.choice(upload, "division_level", "Division/Level")?,
-        test_type: values.choice(upload, "test_type", "Test type")?,
-        host: values.choice(upload, "host", "Host")?,
+        month: choice(&values, upload, "month", "Month")?,
+        competition: choice(&values, upload, "competition", "Competition")?,
+        division_level: choice(&values, upload, "division_level", "Division/Level")?,
+        test_type: choice(&values, upload, "test_type", "Test type")?,
+        host: choice(&values, upload, "host", "Host")?,
     };
 
     let kinds = document_kinds(&state.db).await.map_err(Refusal::internal)?;
@@ -452,66 +444,29 @@ fn year_choice(upload: &Upload) -> Result<Option<i16>, Refusal> {
     }
 }
 
-/// Every Facet value and alias, for reading the dropdowns.
-struct FacetValueList {
-    /// `(facet, id, name)`
-    values: Vec<(String, i64, String)>,
-    /// `(facet, alias, value id)`
-    aliases: Vec<(String, String, i64)>,
-}
-
-impl FacetValueList {
-    async fn load(db: &PgPool) -> Result<Self, sqlx::Error> {
-        Ok(Self {
-            values: sqlx::query_as(
-                "SELECT facet::text, id, name FROM facet_values ORDER BY facet, display_order, name",
-            )
-            .fetch_all(db)
-            .await?,
-            aliases: sqlx::query_as("SELECT facet::text, alias, facet_value_id FROM facet_value_aliases")
-                .fetch_all(db)
-                .await?,
-        })
+/// The dropdown `facet`'s choice. Text under **+ New value** wins over the
+/// dropdown, and names an existing value (or alias, ignoring case) when
+/// there is one.
+fn choice(values: &FacetValueList, upload: &Upload, facet: &str, label: &str) -> Result<Choice, Refusal> {
+    let typed = upload.field(&format!("{facet}_new"));
+    if !typed.is_empty() {
+        return Ok(values
+            .find(facet, typed)
+            .map_or_else(|| Choice::New(typed.to_owned()), Choice::Value));
     }
-
-    /// The dropdown `facet`'s choice. Text under **+ New value** wins over
-    /// the dropdown, and names an existing value (or alias, ignoring case)
-    /// when there is one.
-    fn choice(&self, upload: &Upload, facet: &str, label: &str) -> Result<Choice, Refusal> {
-        let typed = upload.field(&format!("{facet}_new"));
-        if !typed.is_empty() {
-            return Ok(self
-                .find(facet, typed)
-                .map_or_else(|| Choice::New(typed.to_owned()), Choice::Value));
-        }
-        match upload.field(facet) {
-            "" => Err(Refusal::bad_request(format!("Choose the {label}, or Unknown."))),
-            "unknown" => Ok(Choice::Unknown),
-            "not_applicable" if facet == "month" => Ok(Choice::NotApplicable),
-            "new" => Err(Refusal::bad_request(format!("Type the new {label}."))),
-            raw => raw
-                .parse::<i64>()
-                .ok()
-                .filter(|id| self.values.iter().any(|(f, v, _)| f == facet && v == id))
-                .map(Choice::Value)
-                .ok_or_else(|| {
-                    Refusal::bad_request(format!("That {label} no longer exists. Reload the page and try again."))
-                }),
-        }
-    }
-
-    fn find(&self, facet: &str, name: &str) -> Option<i64> {
-        let name = name.to_lowercase();
-        self.values
-            .iter()
-            .find(|(f, _, n)| f == facet && n.to_lowercase() == name)
-            .map(|(_, id, _)| *id)
-            .or_else(|| {
-                self.aliases
-                    .iter()
-                    .find(|(f, a, _)| f == facet && a.to_lowercase() == name)
-                    .map(|(_, _, id)| *id)
-            })
+    match upload.field(facet) {
+        "" => Err(Refusal::bad_request(format!("Choose the {label}, or Unknown."))),
+        "unknown" => Ok(Choice::Unknown),
+        "not_applicable" if facet == "month" => Ok(Choice::NotApplicable),
+        "new" => Err(Refusal::bad_request(format!("Type the new {label}."))),
+        raw => raw
+            .parse::<i64>()
+            .ok()
+            .filter(|id| values.name(facet, *id).is_some())
+            .map(Choice::Value)
+            .ok_or_else(|| {
+                Refusal::bad_request(format!("That {label} no longer exists. Reload the page and try again."))
+            }),
     }
 }
 
@@ -749,7 +704,7 @@ async fn resolve(tx: &mut Transaction<'_, Postgres>, facet: &str, choice: &Choic
             .await?;
             match existing {
                 Some(id) => id,
-                None => create_facet_value(tx, facet, name).await?,
+                None => facet_values::create(tx, facet, name).await?,
             }
         }
     };
@@ -764,28 +719,37 @@ async fn resolve(tx: &mut Transaction<'_, Postgres>, facet: &str, choice: &Choic
     })
 }
 
-async fn create_facet_value(tx: &mut Transaction<'_, Postgres>, facet: &str, name: &str) -> anyhow::Result<i64> {
-    let (id, display_order): (i64, i32) = sqlx::query_as(
-        "INSERT INTO facet_values (facet, name, display_order)
-         SELECT $1::facet, $2, coalesce(max(display_order), 0) + 1 FROM facet_values WHERE facet = $1::facet
-         RETURNING id, display_order",
+/// Point every held upload that chose Facet value `from` at `to` instead,
+/// for a merge. A held plan's choice is `{"Value": id}` (see [`Choice`]).
+pub async fn replace_held_value(
+    tx: &mut Transaction<'_, Postgres>,
+    facet: &str,
+    from: i64,
+    to: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE pending_uploads
+         SET plan = jsonb_set(plan, ARRAY['facets', $1], jsonb_build_object('Value', $3::bigint))
+         WHERE plan -> 'facets' -> $1 = jsonb_build_object('Value', $2::bigint)",
     )
     .bind(facet)
-    .bind(name)
-    .fetch_one(&mut **tx)
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
     .await?;
-    change_log::record_created(
-        tx,
-        Entity::FacetValue,
-        id,
-        [
-            Change::set("facet", facet),
-            Change::set("name", name),
-            Change::set("display_order", display_order),
-        ],
+    Ok(())
+}
+
+/// Whether a held upload chose Facet value `id`, so it can't be deleted.
+pub async fn held_uses(tx: &mut Transaction<'_, Postgres>, facet: &str, id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pending_uploads
+                        WHERE plan -> 'facets' -> $1 = jsonb_build_object('Value', $2::bigint))",
     )
-    .await?;
-    Ok(id)
+    .bind(facet)
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 // --------------------------------------------------------- the duplicate guard

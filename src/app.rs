@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod add_test;
 mod admin;
+pub mod facet_values;
 pub mod pdf;
 pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout};
+use facet_values::FacetValues;
 use pdf::PdfProblems;
 
 use crate::download::{
@@ -34,6 +36,8 @@ enum Route {
     AddTest { added: String, pending: String, notice: String },
     #[route("/admin/needs-review")]
     PdfProblems {},
+    #[route("/admin/facets?:facet")]
+    FacetValues { facet: String },
 }
 
 #[component]

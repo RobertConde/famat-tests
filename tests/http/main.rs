@@ -11,6 +11,7 @@ mod bulk_download;
 mod documents;
 mod download_menu;
 mod download_names;
+mod facet_values;
 mod import;
 mod pdf_conversion;
 mod pdf_queue;
