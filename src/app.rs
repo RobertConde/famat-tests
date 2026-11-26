@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod add_test;
 mod admin;
+pub mod pdf;
 pub mod upload_rules;
 use add_test::AddTest;
 use admin::{AdminMenu, Login, Logout};
+use pdf::PdfProblems;
 
 use crate::download::{
     BULK_ZIP_PATH, Contents, Format, GroupCounts, KindGroup, MAX_BULK_TESTS, selection_value, zip_href,
@@ -30,6 +32,8 @@ enum Route {
     Logout {},
     #[route("/admin/tests/new?:added&:pending&:notice")]
     AddTest { added: String, pending: String, notice: String },
+    #[route("/admin/needs-review")]
+    PdfProblems {},
 }
 
 #[component]

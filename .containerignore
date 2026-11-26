@@ -1,0 +1,11 @@
+# Kept out of the image build context (Containerfile).
+target/
+dist/
+data/
+experiments/
+.claude/
+.git/
+*.sql
+!/migrations/*.sql
+code.tar.gz
+config.ini

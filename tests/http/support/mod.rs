@@ -23,6 +23,7 @@ pub mod download;
 pub mod fixtures;
 pub mod html;
 pub mod import;
+pub mod pdf;
 pub mod zip;
 
 use std::{
@@ -124,10 +125,22 @@ pub struct TestApp {
     binary: PathBuf,
     server: Child,
     log_path: PathBuf,
+    port: u16,
+    /// Extra environment for the server, from [`TestApp::start_with`].
+    server_env: Vec<(String, String)>,
 }
 
 impl TestApp {
     pub async fn start() -> Self {
+        Self::start_with(&[]).await
+    }
+
+    /// [`TestApp::start`], with extra environment variables for the server.
+    ///
+    /// The server converts no PDFs (`PDF_WORKERS=0`) unless `server_env`
+    /// sets `PDF_WORKERS`, so a Document stays "being prepared" for tests
+    /// that don't care about conversion.
+    pub async fn start_with(server_env: &[(&str, &str)]) -> Self {
         let env = Env::load();
         let id = uuid::Uuid::new_v4().simple().to_string();
         let database = format!("famat_test_{id}");
@@ -146,40 +159,14 @@ impl TestApp {
         let log_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("http-tests");
         std::fs::create_dir_all(&log_dir).unwrap();
         let log_path = log_dir.join(format!("{id}.log"));
-        let log = File::create(&log_path).unwrap();
+        File::create(&log_path).unwrap();
 
         let port = free_port();
-        let (binary, mut command) = match std::env::var_os("FAMAT_TEST_SERVER") {
-            Some(binary) => (PathBuf::from(&binary), Command::new(binary)),
-            None => {
-                // A cargo-built server has no dx bundle beside it; Dioxus needs
-                // some public directory, and the pages render without one.
-                let public = log_dir.join("empty-public");
-                std::fs::create_dir_all(&public).unwrap();
-                let binary = PathBuf::from(env!("CARGO_BIN_EXE_famat"));
-                let mut command = Command::new(&binary);
-                command.env("DIOXUS_PUBLIC_PATH", public);
-                (binary, command)
-            }
-        };
-        let server = command
-            // Serve as in production, not as under `dx serve`.
-            .env_remove("DIOXUS_CLI_ENABLED")
-            .env("IP", "127.0.0.1")
-            .env("PORT", port.to_string())
-            .env("DATABASE_URL", &database_url)
-            .env("DATABASE_MAX_CONNECTIONS", "4")
-            .env("S3_ENDPOINT", &env.s3_endpoint)
-            .env("S3_REGION", &env.s3_region)
-            .env("S3_BUCKET", &env.s3_bucket)
-            .env("S3_ACCESS_KEY_ID", &env.s3_access_key_id)
-            .env("S3_SECRET_ACCESS_KEY", &env.s3_secret_access_key)
-            .env("S3_KEY_PREFIX", &key_prefix)
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .expect("start the famat server");
+        let server_env: Vec<(String, String)> = server_env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let (binary, server) = spawn_server(&env, port, &database_url, &key_prefix, &log_path, &server_env);
 
         let mut app = TestApp {
             base_url: format!("http://127.0.0.1:{port}"),
@@ -198,6 +185,8 @@ impl TestApp {
             binary,
             server,
             log_path,
+            port,
+            server_env,
         };
         app.wait_until_ready().await;
         app.db = PgPoolOptions::new()
@@ -206,6 +195,23 @@ impl TestApp {
             .await
             .expect("connect to the test database");
         app
+    }
+
+    /// Stop the server and start it again on the same port, database and
+    /// objects, as a restart or a crash and recovery would.
+    pub async fn restart(&mut self) {
+        let _ = self.server.kill();
+        let _ = self.server.wait();
+        let (_, server) = spawn_server(
+            &self.env,
+            self.port,
+            &self.database_url,
+            &self.key_prefix,
+            &self.log_path,
+            &self.server_env,
+        );
+        self.server = server;
+        self.wait_until_ready().await;
     }
 
     async fn wait_until_ready(&mut self) {
@@ -315,6 +321,56 @@ impl Drop for TestApp {
         });
         let _ = cleanup.join();
     }
+}
+
+/// Start the `famat` server for a test, appending to its log. Returns the
+/// binary it runs.
+fn spawn_server(
+    env: &Env,
+    port: u16,
+    database_url: &str,
+    key_prefix: &str,
+    log_path: &std::path::Path,
+    server_env: &[(String, String)],
+) -> (PathBuf, Child) {
+    let log = File::options().append(true).open(log_path).unwrap();
+    let (binary, mut command) = match std::env::var_os("FAMAT_TEST_SERVER") {
+        Some(binary) => (PathBuf::from(&binary), Command::new(binary)),
+        None => {
+            // A cargo-built server has no dx bundle beside it; Dioxus needs
+            // some public directory, and the pages render without one.
+            let public = log_path.with_file_name("empty-public");
+            std::fs::create_dir_all(&public).unwrap();
+            let binary = PathBuf::from(env!("CARGO_BIN_EXE_famat"));
+            let mut command = Command::new(&binary);
+            command.env("DIOXUS_PUBLIC_PATH", public);
+            (binary, command)
+        }
+    };
+    command
+        // Serve as in production, not as under `dx serve`.
+        .env_remove("DIOXUS_CLI_ENABLED")
+        .env("IP", "127.0.0.1")
+        .env("PORT", port.to_string())
+        .env("DATABASE_URL", database_url)
+        .env("DATABASE_MAX_CONNECTIONS", "4")
+        .env("S3_ENDPOINT", &env.s3_endpoint)
+        .env("S3_REGION", &env.s3_region)
+        .env("S3_BUCKET", &env.s3_bucket)
+        .env("S3_ACCESS_KEY_ID", &env.s3_access_key_id)
+        .env("S3_SECRET_ACCESS_KEY", &env.s3_secret_access_key)
+        .env("S3_KEY_PREFIX", key_prefix)
+        .env("PDF_WORKERS", "0");
+    for (name, value) in server_env {
+        command.env(name, value);
+    }
+    let server = command
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect("start the famat server");
+    (binary, server)
 }
 
 /// A port nothing is listening on right now.

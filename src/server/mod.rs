@@ -9,6 +9,7 @@ pub mod db;
 pub mod documents;
 pub mod download_name;
 pub mod import;
+pub mod pdf;
 pub mod search;
 pub mod storage;
 pub mod zip;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub db: PgPool,
     pub storage: Storage,
     pub csrf_key: auth::CsrfKey,
+    /// Wakes the PDF conversion workers.
+    pub pdf: pdf::Queue,
 }
 
 /// The full axum router: Dioxus SSR and server functions, plus plain routes
@@ -42,7 +45,13 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
     let db = db::connect(&config.database).await?;
     let storage = Storage::new(&config.storage);
     let csrf_key = auth::CsrfKey::load(&db).await?;
-    let state = AppState { db, storage, csrf_key };
+    let state = AppState {
+        db,
+        storage,
+        csrf_key,
+        pdf: pdf::Queue::default(),
+    };
+    pdf::start(&state, config.pdf.clone());
 
     Ok(dioxus::server::router(app::App)
         .route("/tests/{test_id}/documents/{id}/pdf", get(documents::pdf))

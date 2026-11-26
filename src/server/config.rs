@@ -2,12 +2,15 @@
 //!
 //! The listen address comes from `IP` and `PORT`, which Dioxus reads itself.
 
+use std::{path::PathBuf, time::Duration};
+
 use anyhow::{Context, bail};
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
+    pub pdf: PdfConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +61,7 @@ impl Config {
                 secret_access_key: required("S3_SECRET_ACCESS_KEY")?,
                 key_prefix: optional("S3_KEY_PREFIX").unwrap_or_default(),
             },
+            pdf: PdfConfig::from_env()?,
         })
     }
 }
@@ -71,6 +75,48 @@ impl DatabaseConfig {
                 .map(|v| v.parse().context("DATABASE_MAX_CONNECTIONS must be a number"))
                 .transpose()?
                 .unwrap_or(10),
+        })
+    }
+}
+
+/// The PDF conversion queue (`server::pdf`).
+#[derive(Clone, Debug)]
+pub struct PdfConfig {
+    /// `PDF_WORKERS`: conversions run at once, default 2. 0 turns
+    /// conversion off (jobs are still queued).
+    pub workers: usize,
+    /// `PDF_TIMEOUT_SECS`: how long one conversion may take before its
+    /// whole process group is killed, default 120.
+    pub timeout: Duration,
+    /// `PDF_SOFFICE`: the LibreOffice command, default `soffice`.
+    pub soffice: PathBuf,
+    /// `PDF_PROFILE_TEMPLATE`: a LibreOffice user profile that each job's
+    /// throwaway profile is copied from (the image bakes one in). Unset, each
+    /// job starts from an empty profile. Either way `MathTypeToMath` is off.
+    pub profile_template: Option<PathBuf>,
+    /// `PDF_WORK_DIR`: where jobs make their temporary directories, default
+    /// the system's temporary directory.
+    pub work_dir: PathBuf,
+}
+
+impl PdfConfig {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let number = |name: &str, default: u64| -> anyhow::Result<u64> {
+            optional(name)
+                .map(|v| v.parse().with_context(|| format!("{name} must be a whole number")))
+                .transpose()
+                .map(|v| v.unwrap_or(default))
+        };
+        let timeout = number("PDF_TIMEOUT_SECS", 120)?;
+        if timeout == 0 {
+            bail!("PDF_TIMEOUT_SECS must be at least 1");
+        }
+        Ok(Self {
+            workers: usize::try_from(number("PDF_WORKERS", 2)?).context("PDF_WORKERS is too large")?,
+            timeout: Duration::from_secs(timeout),
+            soffice: optional("PDF_SOFFICE").map_or_else(|| PathBuf::from("soffice"), PathBuf::from),
+            profile_template: optional("PDF_PROFILE_TEMPLATE").map(PathBuf::from),
+            work_dir: optional("PDF_WORK_DIR").map_or_else(std::env::temp_dir, PathBuf::from),
         })
     }
 }
