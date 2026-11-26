@@ -263,8 +263,8 @@ impl TestApp {
     }
 
     /// Every change log entry, oldest first, as `(entity, entity id, field,
-    /// before, after)`. There is no Change log page yet, so this reads the
-    /// table, which is the log's contract with that page.
+    /// before, after)`, read from the table: the log's contract with the
+    /// Change log page (`tests/http/change_log.rs` checks the page itself).
     pub async fn change_log(&self) -> Vec<(String, i64, String, Option<String>, Option<String>)> {
         sqlx::query_as("SELECT entity, entity_id, field, before, after FROM change_log ORDER BY id")
             .fetch_all(&self.db)
