@@ -1,0 +1,5 @@
+# Postgres data for the FAMAT Test Bank. Backed up nightly by
+# famat-backup (as a pg_dump / an rclone copy, not as raw files).
+
+[Volume]
+VolumeName=famat-pg

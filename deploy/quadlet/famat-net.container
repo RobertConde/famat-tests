@@ -1,0 +1,39 @@
+# The FAMAT Test Bank's shared network namespace. This container only sleeps
+# (the Kubernetes pause image); the app, Postgres, Garage and cloudflared all
+# join its network namespace (Network=famat-net.container), so they reach each
+# other on 127.0.0.1 and nothing else can. It works like a pod's infra
+# container, and `podman ps` shows the five together.
+#
+# Nothing is published on the host. The only way in is the Cloudflare Tunnel,
+# which cloudflared dials out to. The app trusts CF-Connecting-IP for its login
+# rate limit, so its port must never be reachable any other way: do not add
+# PublishPort= here, and keep every service bound to 127.0.0.1 (this
+# container's address on the container bridge is reachable from the host).
+#
+# Why not a Quadlet .pod: for a pod member, `podman auto-update` restarts the
+# whole pod's unit, and that restart succeeds as soon as the pod is up,
+# whether or not the new app image ever passes its health check, so a bad
+# image is never rolled back (tried on Podman 5.4.2, Debian 13). And Podman
+# refuses to let a container outside a pod join the pod's namespace. Here each
+# container has its own unit: auto-update restarts just famat-app.service,
+# which starts only once /healthz answers (Notify=healthy), and a failed
+# restart rolls back to the previous image.
+#
+# Installed to /etc/containers/systemd/ (deploy/install.sh); systemd runs it as
+# famat-net.service. `systemctl start famat-net` starts everything.
+
+[Unit]
+Description=FAMAT Test Bank network namespace
+Wants=famat-postgres.service famat-garage.service famat-app.service famat-cloudflared.service
+
+[Container]
+ContainerName=famat-net
+Image=registry.k8s.io/pause:3.10
+# cloudflared's outbound connections go through the default bridge.
+Network=podman
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target default.target

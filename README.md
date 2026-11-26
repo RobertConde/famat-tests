@@ -58,6 +58,12 @@ The app image (`Containerfile`, Debian trixie) builds that bundle and adds Libre
 podman build -t famat -f Containerfile .
 ```
 
+CI (`.github/workflows/image.yml`) builds the bundle, runs the HTTP suite against it, puts that same bundle in the image (`--build-context bundle=dist`), checks that the image answers `/healthz`, and on `main` pushes it to `ghcr.io/robertconde/famat-tests` (`:latest` and `:sha-<commit>`).
+
+## Deployment
+
+Production runs on Debian 13 as Podman Quadlet units, behind a Cloudflare Tunnel, with nightly restic backups. The files are in `deploy/`, and the runbooks (setup, Cloudflare, import, restore, upgrading) in `docs/deploy/`.
+
 ## Configuration
 
 The server reads its configuration from the environment:
@@ -233,4 +239,5 @@ state.pdf.wake();
 - `tests/fixtures/import/`: the synthetic inputs the import tests run on
 - `tests/fixtures/pdf/`: the files the PDF conversion tests convert
 - `Containerfile`: the app image
+- `deploy/`, `docs/deploy/`: the production units, backup script and runbooks
 - `scripts/`, `dev/`: local Postgres + Garage, and the run, test and bundle commands

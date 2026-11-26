@@ -1,0 +1,55 @@
+# The FAMAT Test Bank app (ghcr.io/robertconde/famat-tests, built by CI from
+# main). Listens on 127.0.0.1:8080 in famat-net; cloudflared is its only
+# client. Starts after Postgres and Garage are healthy, and runs the
+# migrations itself.
+#
+# `podman auto-update` (podman-auto-update.timer) pulls a new :latest and
+# restarts this unit. Notify=healthy makes the restart succeed only once
+# /healthz answers, so an image that never gets healthy fails the restart and
+# auto-update rolls back to the previous image.
+
+[Unit]
+Description=FAMAT Test Bank app
+BindsTo=famat-net.service
+After=famat-net.service
+Requires=famat-postgres.service famat-garage.service
+After=famat-postgres.service famat-garage.service
+
+[Container]
+ContainerName=famat-app
+# famat-net's network namespace: 127.0.0.1 is shared with the others.
+Network=famat-net.container
+Image=ghcr.io/robertconde/famat-tests:latest
+# An init as PID 1, so SIGTERM stops the server at once instead of after
+# systemd's kill timeout.
+RunInit=true
+AutoUpdate=registry
+# Loopback only: see famat-net.container. CF-Connecting-IP is trusted.
+Environment=IP=127.0.0.1 PORT=8080
+# No password in the URL: sqlx takes it from PGPASSWORD.
+Environment=DATABASE_URL=postgres://famat@127.0.0.1:5432/famat
+Secret=famat-db-password,type=env,target=PGPASSWORD
+Environment=S3_ENDPOINT=http://127.0.0.1:3900 S3_REGION=garage S3_BUCKET=famat
+Secret=famat-s3-access-key-id,type=env,target=S3_ACCESS_KEY_ID
+Secret=famat-s3-secret-access-key,type=env,target=S3_SECRET_ACCESS_KEY
+# The PDF queue: 2 LibreOffice conversions at once, 120 s each (the defaults).
+Environment=PDF_WORKERS=2 PDF_TIMEOUT_SECS=120
+HealthCmd=curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:8080/healthz
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=3
+# Migrations run before the server listens.
+HealthStartPeriod=120s
+# A running container that turns unhealthy is killed; systemd restarts it.
+HealthOnFailure=kill
+Notify=healthy
+
+[Service]
+# 143: stopped by SIGTERM, as on every restart.
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

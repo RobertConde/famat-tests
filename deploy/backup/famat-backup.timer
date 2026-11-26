@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly restic backup (FAMAT Test Bank, Nextcloud, WeBWorK)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=20m
+# Run at the next boot if the server was off at 03:30.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
