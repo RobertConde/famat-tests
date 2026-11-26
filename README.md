@@ -70,6 +70,7 @@ The server reads its configuration from the environment:
 
 - `src/app.rs`: the Dioxus app (routes, pages, server functions), compiled for both server and WASM
 - `src/app/admin.rs`: the login and logout pages and the Admin menu
+- `src/download.rs`: what the download menus offer (kind groups, Formats), shared by the page and the zip route
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, and plain axum routes such as downloads
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)

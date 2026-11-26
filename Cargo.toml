@@ -22,7 +22,9 @@ sqlx = { version = "0.9.1", default-features = false, features = [
     "migrate",
 ], optional = true }
 aws-sdk-s3 = { version = "1", optional = true, features = ["behavior-version-latest"] }
-tokio-util = { version = "0.7", features = ["io"], optional = true }
+tokio-util = { version = "0.7", features = ["io", "compat"], optional = true }
+async_zip = { version = "0.0.17", features = ["tokio"], optional = true }
+futures = { version = "0.3", optional = true }
 anyhow = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
@@ -43,6 +45,8 @@ server = [
     "dep:sqlx",
     "dep:aws-sdk-s3",
     "dep:tokio-util",
+    "dep:async_zip",
+    "dep:futures",
     "dep:anyhow",
     "dep:log",
     "dep:serde_urlencoded",
@@ -64,6 +68,8 @@ reqwest = { version = "0.12", default-features = false }
 scraper = "0.29"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+# Reads the zips the server streams, independently of async_zip. Stored only.
+zip = { version = "2.4", default-features = false }
 
 [[test]]
 name = "http"

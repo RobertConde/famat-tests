@@ -8,6 +8,7 @@ pub mod documents;
 pub mod download_name;
 pub mod search;
 pub mod storage;
+pub mod zip;
 
 use axum::{
     Extension, Router,
@@ -43,6 +44,7 @@ pub async fn router(config: Config) -> anyhow::Result<Router> {
     Ok(dioxus::server::router(app::App)
         .route("/tests/{test_id}/documents/{id}/pdf", get(documents::pdf))
         .route("/tests/{test_id}/documents/{id}/original", get(documents::original))
+        .route("/tests/{test_id}/zip", get(zip::test_zip))
         .route("/documents/{id}/pdf", get(documents::pdf_of_first_test))
         .route("/documents/{id}/original", get(documents::original_of_first_test))
         .route("/healthz", get(health))

@@ -3,11 +3,15 @@
 //! Everything here compiles for both targets; server-only code lives in
 //! `crate::server` and is only referenced from server-function bodies.
 
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod admin;
 use admin::{AdminMenu, Login, Logout};
+
+use crate::download::{Contents, Format, KindGroup, zip_href};
 
 #[derive(Routable, Clone, Debug, PartialEq)]
 #[rustfmt::skip]
@@ -39,7 +43,7 @@ const FONTS: &str = "https://fonts.googleapis.com/css2?family=Public+Sans:wght@4
 /// `prototype/search-page`, `template.html`). Light only, sans-serif only.
 const CSS: &str = r#"
 :root { --paper: #fff; --ink: #18202c; --muted: #5d6675; --rule: #dfe3e8; --head: #f4f6f8;
-  --accent: #1f4e9c; --faint: #a4acb8;
+  --accent: #1f4e9c; --accent-soft: #e8eef9; --faint: #a4acb8;
   --f-body: "Public Sans", system-ui, sans-serif; --f-mono: "IBM Plex Mono", ui-monospace, monospace;
   color-scheme: light }
 * { box-sizing: border-box }
@@ -64,7 +68,11 @@ button, select, input { font: inherit; color: inherit }
   padding: 5px 18px; font-weight: 600; cursor: pointer }
 .count { text-align: center; font-size: .85rem; color: var(--muted); padding-block: 10px; margin: 0 }
 .count b { color: var(--ink) }
-.tbl { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap }
+/* Not a scroll container: it would clip the download menus of the last rows. */
+.tbl { border: 1px solid var(--rule); border-radius: 6px }
+th:first-child { border-top-left-radius: 5px }
+th:last-child { border-top-right-radius: 5px }
 table { border-collapse: collapse; width: 100% }
 th { text-align: left; font-size: .75rem; color: var(--muted); font-weight: 600; background: var(--head); padding: 7px 10px;
   white-space: nowrap; border-bottom: 1px solid var(--rule) }
@@ -75,6 +83,28 @@ tr:last-child td { border-bottom: 0 }
 a.original { font-weight: 400; font-size: .8rem; color: var(--muted); margin-left: 6px }
 a { color: var(--accent); text-decoration: none; font-weight: 500 }
 a:hover { text-decoration: underline }
+.split { position: relative; display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper) }
+.split > a, .split summary { padding: 4px 8px; cursor: pointer; color: var(--ink); font-weight: 400; display: inline-flex;
+  align-items: center; border-radius: 5px }
+.split > a { border-radius: 5px 0 0 5px }
+.split details { display: flex }
+.split summary { list-style: none; border-left: 1px solid var(--rule); padding: 4px 6px; color: var(--muted); border-radius: 0 5px 5px 0 }
+.split summary::-webkit-details-marker { display: none }
+.split > a:hover, .split summary:hover { background: var(--head); text-decoration: none }
+.split svg { width: 16px; height: 16px }
+.scrim { position: fixed; inset: 0; z-index: 19 }
+.menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 210px; background: var(--paper);
+  border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 24px rgb(15 23 42 / .14); padding: 4px; display: grid; text-align: left }
+.menu > a { padding: 6px 10px; border-radius: 5px; display: flex; justify-content: space-between; gap: 16px; font-size: .9rem;
+  color: var(--ink); font-weight: 400 }
+.menu > a:hover, .menu > a:focus-visible { background: var(--head); text-decoration: none }
+.menu .n { color: var(--muted); font-variant-numeric: tabular-nums }
+.menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 0 }
+.menu .fmt { display: flex; gap: 2px; padding: 4px 6px; align-items: center; font-size: .8rem; color: var(--muted) }
+.menu .fmt span { margin-right: auto }
+.menu .fmt a { border-radius: 4px; padding: 3px 8px; font-size: .8rem; color: var(--ink); font-weight: 400 }
+.menu .fmt a:hover { background: var(--head); text-decoration: none }
+.menu .fmt a[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600 }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding-block: 10px; font-size: .85rem }
 .pager a, .pager .off { border: 1px solid var(--rule); background: var(--paper); border-radius: 5px; padding: 3px 10px;
   color: var(--ink); font-weight: 400 }
@@ -91,6 +121,7 @@ a:hover { text-decoration: underline }
   td[data-l]::before { content: attr(data-l) ": "; color: var(--muted); font-size: .8rem }
   td.year { grid-row: span 2; font-weight: 600 }
   td.wide { grid-column: 1 / -1 }
+  .menu { right: auto; left: 0 }
 }
 "#;
 
@@ -125,6 +156,8 @@ pub struct DocumentLink {
     /// The Original's extension (without the dot) when the Original is not a
     /// PDF, for the small download link beside the PDF one.
     pub original_extension: Option<String>,
+    /// What its kind contains, for the download menu's kind groups.
+    pub contents: Contents,
 }
 
 /// One Test in the search results.
@@ -154,6 +187,8 @@ pub struct SearchQuery {
     pub includes_test: bool,
     pub includes_answers: bool,
     pub includes_solutions: bool,
+    /// The download menus' Format switch, kept for the page (`format`).
+    pub format: Format,
 }
 
 /// The query-string value of a dropdown's **Unknown** option.
@@ -184,6 +219,8 @@ pub struct SearchResults {
     /// Links to the neighbouring pages of the same search.
     pub previous: Option<String>,
     pub next: Option<String>,
+    /// This page under each Format, for the Format switch without JS.
+    pub format_links: Vec<(Format, String)>,
     pub tests: Vec<TestRow>,
 }
 
@@ -213,6 +250,11 @@ fn Search() -> Element {
     let years: Vec<String> = options.years.iter().map(i16::to_string).collect();
     let total = results.total;
     let total_text = thousands(total);
+    let format = query.format;
+    use_context_provider(|| DownloadFormat {
+        chosen: Signal::new(format),
+        links: results.format_links.clone(),
+    });
 
     rsx! {
         AdminMenu {}
@@ -246,6 +288,9 @@ fn Search() -> Element {
                     Include { value: "answers", label: "Answers", checked: query.includes_answers }
                     Include { value: "solutions", label: "Solutions", checked: query.includes_solutions }
                 }
+                if format != Format::default() {
+                    input { r#type: "hidden", name: "format", value: format.slug() }
+                }
                 div { class: "actions",
                     a { class: "reset", href: "/", "Clear" }
                     button { class: "go", r#type: "submit", "Search" }
@@ -269,6 +314,7 @@ fn Search() -> Element {
                             th { "Division/Level" }
                             th { "Test type" }
                             th { "Documents" }
+                            th { span { class: "sr", "Download" } }
                         }
                     }
                     tbody {
@@ -369,6 +415,146 @@ fn Row(test: TestRow) -> Element {
                     }
                 }
             }
+            td { class: "download wide",
+                if !test.documents.is_empty() {
+                    DownloadButton { test_id: test.id, documents: test.documents.clone() }
+                }
+            }
+        }
+    }
+}
+
+/// The page's Format switch, shared by every row's download menu: the
+/// chosen Format, and this page's URL under each one (the switch's links
+/// without JS).
+#[derive(Clone)]
+struct DownloadFormat {
+    chosen: Signal<Format>,
+    links: Vec<(Format, String)>,
+}
+
+/// A Test's Notion-style split download button: the icon zips all of its
+/// Documents in the chosen Format, and ▾ opens a menu of kind groups (with
+/// counts, only the non-empty ones) and the Format switch.
+///
+/// Without JS the menu is a native `<details>` disclosure of plain links,
+/// and the Format switch reloads the page with `?format=`. Hydrated, it
+/// opens on click only, moves focus to its first item, and closes on an
+/// outside click, Esc (focus returns to ▾) or a choice; the Format switch
+/// then updates every row without a reload.
+#[component]
+fn DownloadButton(test_id: i64, documents: Vec<DocumentLink>) -> Element {
+    let DownloadFormat { mut chosen, links } = use_context::<DownloadFormat>();
+    let mut open = use_signal(|| false);
+    let mut toggle = use_signal(|| None::<Rc<MountedData>>);
+    let mut first_item = use_signal(|| None::<Rc<MountedData>>);
+    use_effect(move || {
+        if open()
+            && let Some(item) = first_item.peek().clone()
+        {
+            spawn(async move {
+                let _ = item.set_focus(true).await;
+            });
+        }
+    });
+    let mut close_and_refocus = move || {
+        open.set(false);
+        if let Some(toggle) = toggle.peek().clone() {
+            spawn(async move {
+                let _ = toggle.set_focus(true).await;
+            });
+        }
+    };
+
+    let format = chosen();
+    let groups: Vec<(KindGroup, usize)> = KindGroup::MENU
+        .into_iter()
+        .map(|group| (group, documents.iter().filter(|d| group.includes(d.contents)).count()))
+        .filter(|(_, count)| *count > 0)
+        .collect();
+
+    rsx! {
+        div { class: "split",
+            a {
+                class: "all",
+                href: zip_href(test_id, KindGroup::All, format),
+                aria_label: "Download all documents",
+                title: "Download all ({format.label()})",
+                DownloadIcon {}
+            }
+            details {
+                open: open(),
+                onkeydown: move |event| {
+                    if event.key() == Key::Escape && open() {
+                        event.prevent_default();
+                        close_and_refocus();
+                    }
+                },
+                summary {
+                    aria_label: "Choose what to download",
+                    title: "Choose what to download",
+                    onmounted: move |event| toggle.set(Some(event.data())),
+                    onclick: move |event| {
+                        event.prevent_default();
+                        open.toggle();
+                    },
+                    "▾"
+                }
+                if open() {
+                    div { class: "scrim", onclick: move |_| open.set(false) }
+                }
+                div { class: "menu",
+                    for (i , (group , count)) in groups.into_iter().enumerate() {
+                        a {
+                            key: "{group.slug()}",
+                            class: "group",
+                            href: zip_href(test_id, group, format),
+                            onmounted: move |event| {
+                                if i == 0 {
+                                    first_item.set(Some(event.data()));
+                                }
+                            },
+                            onclick: move |_| close_and_refocus(),
+                            "{group.label()}"
+                            span { class: "n", "{count}" }
+                        }
+                    }
+                    hr {}
+                    div { class: "fmt", role: "group", aria_label: "Format",
+                        span { "Format" }
+                        for (option , href) in links {
+                            a {
+                                key: "{option.slug()}",
+                                href,
+                                aria_current: if option == format { "true" } else { "false" },
+                                onclick: move |event| {
+                                    event.prevent_default();
+                                    chosen.set(option);
+                                },
+                                "{option.label()}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn DownloadIcon() -> Element {
+    rsx! {
+        svg {
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            stroke_width: "2",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            "aria-hidden": "true",
+            path { d: "M12 4v11" }
+            path { d: "m7 10 5 5 5-5" }
+            path { d: "M5 20h14" }
         }
     }
 }

@@ -22,6 +22,10 @@ _Avoid_: Doc, file, download
 The role a Document plays for its Test, drawn from a fixed, admin-editable list (Test, Answers, Solutions, Condensed Test, Combined Test+Solutions, Errata, Other). Each kind states what it contains: questions, answers, solutions, or a mix (Solutions also contain answers).
 _Avoid_: Doc title, document type
 
+**Kind group**:
+A part of a Test's Documents offered for download together, by what their kind contains: Tests (questions), Answers (answers only), Solutions (solutions), or Errata & other (nothing searchable). Combined Test+Solutions is in both Tests and Solutions.
+_Avoid_: Category, section
+
 **Label source**:
 Who assigned a Document's kind and its Test's facet values: the student cataloguing sheet, an AI labeling pass, or an Admin. AI labels are always marked as such.
 _Avoid_: Provenance, author

@@ -1,15 +1,16 @@
-//! Download names, built from a Document's metadata at download time and
-//! never stored, so Facet renames and merges apply at once (issue #6):
+//! Download names, built from metadata at download time and never stored,
+//! so Facet renames and merges apply at once (issue #6):
 //!
-//! `T{test id} D{doc id} {Year} {Month} {Competition} - {Host} - {Division/Level} {Test type} - {Document kind}[ ({label})].{ext}`
+//! - **Document:** `T{test id} D{doc id} {Year} {Month} {Competition} - {Host} - {Division/Level} {Test type} - {Document kind}[ ({label})].{ext}`
+//! - **Per-Test zip:** `T{test id} {Year} {Month} {Competition} - {Host} - {Division/Level} {Test type}[ - {Kind group}].zip`
 //!
 //! - Unknown and not-applicable parts are left out, with their separators.
 //! - Test type parentheses are dropped, and `/` becomes `-`.
 //! - Characters Windows rejects are removed.
 //! - Names are capped at about 150 characters by shortening the middle
 //!   Facets (Month, Competition, Host, Division/Level, Test type), longest
-//!   first, then the label. The IDs, Year, kind and extension are never
-//!   shortened.
+//!   first, then the label. The IDs, Year, kind (or kind group) and
+//!   extension are never shortened.
 //!
 //! A PDF and its Original share the base name and differ only by extension,
 //! so the cap applies to the base name: [`MAX_BASE_CHARS`] leaves room for a
@@ -21,18 +22,23 @@ const MAX_BASE_CHARS: usize = 150 - ".docx".len();
 /// Shortening stops at this many characters per part.
 const MIN_PART_CHARS: usize = 3;
 
-/// What a Document's download name is made of. Facets are `None` when
+/// What a Test contributes to a download name. Facets are `None` when
 /// unknown or, for Month, not applicable.
-pub struct NameParts<'a> {
+pub struct TestParts<'a> {
     /// The Test it is downloaded from: a Document can belong to several.
     pub test_id: i64,
-    pub document_id: i64,
     pub year: Option<i16>,
     pub month: Option<&'a str>,
     pub competition: Option<&'a str>,
     pub host: Option<&'a str>,
     pub division_level: Option<&'a str>,
     pub test_type: Option<&'a str>,
+}
+
+/// What a Document's download name is made of.
+pub struct NameParts<'a> {
+    pub test: TestParts<'a>,
+    pub document_id: i64,
     pub kind: &'a str,
     pub label: Option<&'a str>,
 }
@@ -40,20 +46,18 @@ pub struct NameParts<'a> {
 /// The name of one of a Document's files. `extension` has no dot and may be
 /// empty, in which case the name has none.
 pub fn file_name(parts: &NameParts<'_>, extension: &str) -> String {
-    let mut name = Name {
-        ids: format!("T{} D{}", parts.test_id, parts.document_id),
-        year: parts.year.map(|year| year.to_string()),
-        middle: [
-            clean(parts.month),
-            clean(parts.competition),
-            clean(parts.host),
-            clean(parts.division_level),
-            clean(parts.test_type.map(|t| t.replace(['(', ')'], " ")).as_deref()),
-        ],
-        kind: clean(Some(parts.kind)).unwrap_or_default(),
-        label: clean(parts.label),
-    };
+    let ids = format!("T{} D{}", parts.test.test_id, parts.document_id);
+    capped(Name::new(ids, &parts.test, Some(parts.kind), parts.label), extension)
+}
 
+/// The name of a zip of one Test's Documents. `group` is the kind group's
+/// label, or `None` for all of them.
+pub fn zip_name(test: &TestParts<'_>, group: Option<&str>) -> String {
+    capped(Name::new(format!("T{}", test.test_id), test, group, None), "zip")
+}
+
+/// The name shortened to the cap, with its extension.
+fn capped(mut name: Name, extension: &str) -> String {
     let mut base = name.assemble();
     while base.chars().count() > MAX_BASE_CHARS {
         let longest_facet = name
@@ -86,11 +90,28 @@ struct Name {
     year: Option<String>,
     /// Month, Competition, Host, Division/Level, Test type.
     middle: [Option<String>; 5],
-    kind: String,
+    /// The Document kind, or a zip's kind group.
+    kind: Option<String>,
     label: Option<String>,
 }
 
 impl Name {
+    fn new(ids: String, test: &TestParts<'_>, kind: Option<&str>, label: Option<&str>) -> Self {
+        Self {
+            ids,
+            year: test.year.map(|year| year.to_string()),
+            middle: [
+                clean(test.month),
+                clean(test.competition),
+                clean(test.host),
+                clean(test.division_level),
+                clean(test.test_type.map(|t| t.replace(['(', ')'], " ")).as_deref()),
+            ],
+            kind: clean(kind),
+            label: clean(label),
+        }
+    }
+
     /// The name without its extension.
     fn assemble(&self) -> String {
         let [month, competition, host, division_level, test_type] = &self.middle;
@@ -104,11 +125,11 @@ impl Name {
             ],
         );
         let level = join(" ", [division_level.as_ref(), test_type.as_ref()]);
-        let kind = match &self.label {
-            Some(label) => format!("{} ({label})", self.kind),
-            None => self.kind.clone(),
+        let kind = match (&self.kind, &self.label) {
+            (Some(kind), Some(label)) => Some(format!("{kind} ({label})")),
+            (kind, _) => kind.clone(),
         };
-        join(" - ", [Some(&head), host.as_ref(), Some(&level), Some(&kind)])
+        join(" - ", [Some(&head), host.as_ref(), Some(&level), kind.as_ref()])
     }
 }
 

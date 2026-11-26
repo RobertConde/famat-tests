@@ -11,7 +11,7 @@ use crate::support::{
 /// The `(text, href)` of every link in a Test's row on the search page.
 async fn links_of_test(app: &TestApp, test: i64) -> Vec<(String, String)> {
     let page = app.get_page("/").await;
-    links_in(page.one(&format!("tr#T{test}")))
+    links_in(page.one(&format!("tr#T{test} td.documents")))
 }
 
 #[tokio::test]
@@ -281,7 +281,7 @@ async fn hidden_or_trashed_documents_and_documents_of_hidden_or_trashed_tests_ar
     // None of them are linked from the search page either.
     let page = app.get_page("/").await;
     let hrefs: Vec<String> = page
-        .select("#results a[href]")
+        .select("#results td.documents a[href]")
         .iter()
         .map(|a| a.value().attr("href").unwrap().to_owned())
         .collect();

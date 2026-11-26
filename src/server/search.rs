@@ -10,12 +10,17 @@
 //!   only Tests with a Published Document whose kind contains questions,
 //!   answers or solutions.
 //! - `page`: 1-based, [`PAGE_SIZE`] Tests per page.
+//! - `format`: the download menus' Format switch, `pdf` (default),
+//!   `original` or `both`. It filters nothing; links keep it for the page.
 
 use std::collections::HashMap;
 
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
 
-use crate::app::{DocumentLink, FacetValue, SearchOptions, SearchQuery, SearchResults, TestRow, UNKNOWN};
+use crate::{
+    app::{DocumentLink, FacetValue, SearchOptions, SearchQuery, SearchResults, TestRow, UNKNOWN},
+    download::{Contents, Format},
+};
 
 pub const PAGE_SIZE: i64 = 50;
 
@@ -50,6 +55,21 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
         pages,
         previous: if page > 1 { link(page - 1) } else { None },
         next: if page < pages { link(page + 1) } else { None },
+        format_links: Format::ALL
+            .into_iter()
+            .map(|format| {
+                (
+                    format,
+                    href(
+                        &SearchQuery {
+                            format,
+                            ..query.clone()
+                        },
+                        page,
+                    ),
+                )
+            })
+            .collect(),
         tests,
         query,
     })
@@ -90,6 +110,7 @@ impl Params {
             includes_test: self.includes("test"),
             includes_answers: self.includes("answers"),
             includes_solutions: self.includes("solutions"),
+            format: Format::from_slug(&self.first("format")).unwrap_or_default(),
         }
     }
 
@@ -122,6 +143,10 @@ fn href(query: &SearchQuery, page: i64) -> String {
         if included {
             pairs.push(("includes", value));
         }
+    }
+    // In form order: the hidden `format` field follows the checkboxes.
+    if query.format != Format::default() {
+        pairs.push(("format", query.format.slug()));
     }
     if page != "1" {
         pairs.push(("page", &page));
@@ -313,6 +338,9 @@ struct DocumentRecord {
     label: Option<String>,
     /// NULL when the Original is a PDF.
     original_extension: Option<String>,
+    contains_questions: bool,
+    contains_answers: bool,
+    contains_solutions: bool,
 }
 
 /// One page of matching Tests with their Published, untrashed Documents.
@@ -352,7 +380,8 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
     let documents: Vec<DocumentRecord> = sqlx::query_as(
         "SELECT td.test_id, d.id, k.name AS kind, d.label,
                 CASE WHEN o.content_type <> 'application/pdf' AND o.extension <> 'pdf'
-                     THEN o.extension END AS original_extension
+                     THEN o.extension END AS original_extension,
+                k.contains_questions, k.contains_answers, k.contains_solutions
          FROM test_documents td
          JOIN documents d      ON d.id = td.document_id
          JOIN document_kinds k ON k.id = d.kind_id
@@ -371,6 +400,11 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
             kind: d.kind,
             label: d.label,
             original_extension: d.original_extension,
+            contents: Contents {
+                questions: d.contains_questions,
+                answers: d.contains_answers,
+                solutions: d.contains_solutions,
+            },
         });
     }
 
