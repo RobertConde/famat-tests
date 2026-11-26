@@ -106,6 +106,17 @@ An Admin sees an **Edit** link on each result row, which opens the Test edit pag
 - **Replace original:** the same types and limit as Add test. The file streams over `documents/{id}/original` (a refused or cut-off upload leaves the old one), any PDF, made or supplied, is dropped, and the Document is queued for conversion afresh.
 - **Also on Tests…:** attach the Document to another untrashed Test by ID (`T123` or `123`), or detach it. It shows, and downloads under its own ID, on every Test it is on. Detaching it from its last Test is refused.
 - **+ Add files:** Add test's drop zone and rules (kinds, labels, Word+PDF pairs), adding Documents to this Test, hidden or published.
+- **Merge into…:** merge this Test into another typed by ID (see below).
+
+## Bulk edit, merging and Needs review
+
+An Admin's search also finds Hidden Tests, marked **Hidden** (their Documents are listed without links, since nothing Hidden downloads), and can select them. Anonymous visitors never see a Hidden Test, in the results or in the selection.
+
+- **Needs review** is an Admin-only checkbox on the search form (`needs_review=on`; the Admin menu's Needs review link). It keeps the Tests flagged Needs review themselves, or with an untrashed Document that is flagged or whose PDF failed. For anyone else the parameter is ignored. Its results link to the **PDF problems** page (`/admin/needs-review`), which also lists PDFs still being prepared.
+- **Edit selected** in the bulk bar opens `/admin/tests/bulk` with the selection as ticked (logic in `server::bulk_edit`). It sets one Facet value (with **+ New value**) on every selected Test, or ticks or clears Needs review on them (a typed reason is added to each Test's comment on its own line). Each Test is judged alone: changed and logged, unchanged, or refused. A Published Test the change would leave with its Year and Competition both unknown is refused by the publish rule, as is one that is gone or in the Trash. The page then shows the summary: N changed, M unchanged, any refused with the reason.
+- **Merge into…** merges one Test into another: from the bulk bar's **Merge…** (exactly two selected) or the Test edit page. Every Document of the merged Test moves onto the survivor, Trashed ones too. A Document already on both keeps one row, and one also on other Tests keeps them. The empty Test is Hidden and goes to the Trash (`trashed_at`). Each moved Document's `tests` is logged, and the merged Test's `merged_into`, `published` and `trashed`.
+
+Every one of these writes is an Admin-only, CSRF-checked native form post answered with a 303.
 
 ## Importing the old archive
 
@@ -243,6 +254,7 @@ state.pdf.wake();
 - `src/app/facet_values.rs`: the Facet values page
 - `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
 - `src/app/test_edit.rs`: the Test edit page
+- `src/app/bulk_edit.rs`: Edit selected and Merge into…
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, the PDF queue (`pdf/`), and plain axum routes such as downloads
 - `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan and its special cases, loading it, and the reconciliation report

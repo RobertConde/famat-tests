@@ -57,7 +57,7 @@ use crate::app::{
 const MAX_LABEL_CHARS: usize = 60;
 
 /// An ID as an Admin types or a form posts it: `12`, `T12` or `D12`.
-fn parse_id(raw: &str) -> Option<i64> {
+pub(super) fn parse_id(raw: &str) -> Option<i64> {
     let raw = raw.trim();
     let digits = raw.strip_prefix(['T', 't', 'D', 'd']).unwrap_or(raw);
     digits.trim().parse().ok().filter(|id| *id > 0)

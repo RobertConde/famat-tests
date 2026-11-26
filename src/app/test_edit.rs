@@ -9,6 +9,8 @@
 //!   it to another Test by ID or detach it.
 //! - **+ Add files:** the Add test drop zone and rules, adding Documents to
 //!   this Test.
+//! - **Merge into…:** move every Document onto another Test, and put this
+//!   one in the Trash (`crate::app::bulk_edit`).
 //!
 //! Every action is its own native form post (CSRF-checked, Admin-only) that
 //! answers 303 back to this page, so the page works without JavaScript.
@@ -22,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     add_test::{self, FacetField, FacetOptions, FilePicker},
     admin::AdminMenu,
+    bulk_edit::MergeInto,
     pdf::{self, PdfActions},
     upload_rules::ACCEPT,
 };
@@ -271,6 +274,7 @@ pub fn EditTest(id: ReadSignal<i64>) -> Element {
                 }
             }
             AddFiles { test: test.id, csrf: csrf.clone(), kinds: kind_names }
+            MergeInto { from: test.id, csrf: csrf.clone() }
         }
     }
 }

@@ -1,5 +1,5 @@
-//! PDF problems (`/admin/needs-review`, the Admin menu's **Needs review**
-//! link until the Needs review filter exists): Documents whose PDF failed
+//! PDF problems (`/admin/needs-review`, linked from the search page's
+//! Needs review filter): Documents whose PDF failed
 //! or is still being prepared, with **Upload PDF**, **Retry PDF** and
 //! **Retry all failed**.
 //!

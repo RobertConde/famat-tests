@@ -470,7 +470,7 @@ pub(super) async fn planned_documents(state: &AppState, upload: &Upload) -> Resu
     Ok(documents)
 }
 
-fn year_choice(fields: &impl Fields) -> Result<Option<i16>, Refusal> {
+pub(super) fn year_choice(fields: &impl Fields) -> Result<Option<i16>, Refusal> {
     let typed = fields.field("year_new");
     let raw = if typed.is_empty() { fields.field("year") } else { typed };
     match raw {
@@ -487,7 +487,12 @@ fn year_choice(fields: &impl Fields) -> Result<Option<i16>, Refusal> {
 /// The dropdown `facet`'s choice. Text under **+ New value** wins over the
 /// dropdown, and names an existing value (or alias, ignoring case) when
 /// there is one.
-fn choice(values: &FacetValueList, fields: &impl Fields, facet: &str, label: &str) -> Result<Choice, Refusal> {
+pub(super) fn choice(
+    values: &FacetValueList,
+    fields: &impl Fields,
+    facet: &str,
+    label: &str,
+) -> Result<Choice, Refusal> {
     let typed = fields.field(&format!("{facet}_new"));
     if !typed.is_empty() {
         return Ok(values

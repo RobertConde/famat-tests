@@ -1,4 +1,4 @@
-//! Public search over Published Tests.
+//! Search over Published Tests, and for Admins over Hidden ones too.
 //!
 //! The search lives in the query string, so searches are linkable and work
 //! without JS:
@@ -20,6 +20,12 @@
 //!   untrashed Tests stay selected; anything that isn't an ID is ignored.
 //! - `select=all`: also select every Test the search matches, when that
 //!   leaves at most [`MAX_BULK_TESTS`] selected.
+//!
+//! An Admin's search ([`Viewer::Admin`]) also finds Hidden Tests, marked as
+//! such, and may select them. It also reads `needs_review` (any non-empty
+//! value): only Tests flagged Needs review themselves, or with an untrashed
+//! Document that is flagged or whose PDF failed. For everyone else that
+//! parameter is ignored, and Hidden Tests are never found or selected.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,13 +49,22 @@ pub(super) const RESULTS_ORDER: &str = "t.year DESC NULLS LAST,
     tt.display_order NULLS LAST, tt.name,
     t.id";
 
+/// Who is searching: what they may see.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Viewer {
+    /// Published Tests only.
+    Public,
+    /// Hidden Tests too, and the Needs review filter.
+    Admin,
+}
+
 /// One page of the search that `raw_query` (a URL query string, without the
 /// `?`) asks for.
-pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResults, sqlx::Error> {
+pub async fn search(db: &PgPool, raw_query: Option<&str>, viewer: Viewer) -> Result<SearchResults, sqlx::Error> {
     let params = Params::parse(raw_query.unwrap_or(""));
     let values = FacetValueList::load(db).await?;
-    let query = current_names(params.search_query(), &values);
-    let filters = Filters::resolve(&query, &values);
+    let query = current_names(params.search_query(viewer), &values);
+    let filters = Filters::resolve(&query, &values, viewer);
 
     let mut count = QueryBuilder::<Postgres>::new("SELECT count(*) FROM tests t");
     filters.push_where(&mut count);
@@ -76,12 +91,12 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
             wanted = all;
         }
     }
-    let selection = selected_tests(db, &wanted).await?;
+    let selection = selected_tests(db, &wanted, viewer).await?;
     let selected: Vec<i64> = selection.iter().map(|t| t.id).collect();
 
     Ok(SearchResults {
         options: SearchOptions {
-            years: published_years(db).await?,
+            years: years(db, viewer).await?,
             months: values.names("month"),
             competitions: values.names("competition"),
             division_levels: values.names("division_level"),
@@ -118,16 +133,16 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
 // ------------------------------------------------------------- query string
 
 /// The decoded `key=value` pairs of a query string, in order.
-struct Params(Vec<(String, String)>);
+pub(super) struct Params(Vec<(String, String)>);
 
 impl Params {
-    fn parse(raw: &str) -> Self {
+    pub(super) fn parse(raw: &str) -> Self {
         // Malformed input (e.g. bad UTF-8 escapes) is treated as no search.
         Self(serde_urlencoded::from_str(raw).unwrap_or_default())
     }
 
     /// The first value of `key`, trimmed; empty if absent.
-    fn first(&self, key: &str) -> String {
+    pub(super) fn first(&self, key: &str) -> String {
         self.0
             .iter()
             .find(|(k, _)| k == key)
@@ -139,7 +154,8 @@ impl Params {
         self.0.iter().any(|(k, v)| k == "includes" && v == value)
     }
 
-    fn search_query(&self) -> SearchQuery {
+    /// The search asked for; `needs_review` only for an Admin.
+    pub(super) fn search_query(&self, viewer: Viewer) -> SearchQuery {
         SearchQuery {
             year: self.first("year"),
             month: self.first("month"),
@@ -151,16 +167,17 @@ impl Params {
             includes_answers: self.includes("answers"),
             includes_solutions: self.includes("solutions"),
             format: Format::from_slug(&self.first("format")).unwrap_or_default(),
+            needs_review: viewer == Viewer::Admin && !self.first("needs_review").is_empty(),
         }
     }
 
-    fn page(&self) -> i64 {
+    pub(super) fn page(&self) -> i64 {
         self.first("page").parse().unwrap_or(1)
     }
 
     /// The Test IDs in every `sel` value, each once, in order. Values that
     /// aren't IDs are ignored.
-    fn selected(&self) -> Vec<i64> {
+    pub(super) fn selected(&self) -> Vec<i64> {
         let mut seen = HashSet::new();
         self.0
             .iter()
@@ -195,6 +212,9 @@ pub(super) fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
         if included {
             pairs.push(("includes", value));
         }
+    }
+    if query.needs_review {
+        pairs.push(("needs_review", "on"));
     }
     // In form order: the hidden `format` field follows the checkboxes.
     if query.format != Format::default() {
@@ -264,6 +284,9 @@ struct FacetFilter {
 }
 
 struct Filters {
+    viewer: Viewer,
+    /// Admins only: just the Tests that need review.
+    needs_review: bool,
     year: Filter<i16>,
     facets: Vec<FacetFilter>,
     /// `document_kinds` flag columns every match must have a Document for.
@@ -271,7 +294,7 @@ struct Filters {
 }
 
 impl Filters {
-    fn resolve(query: &SearchQuery, values: &FacetValueList) -> Self {
+    fn resolve(query: &SearchQuery, values: &FacetValueList, viewer: Viewer) -> Self {
         let facet = |facet: &str, column, unknown, raw: &str| FacetFilter {
             column,
             unknown,
@@ -288,6 +311,8 @@ impl Filters {
             includes.push("contains_solutions");
         }
         Self {
+            viewer,
+            needs_review: viewer == Viewer::Admin && query.needs_review,
             year: Filter::from_raw(&query.year, |year| year.parse().ok()),
             facets: vec![
                 // An unknown Month is not the same as a not-applicable one.
@@ -321,9 +346,16 @@ impl Filters {
         }
     }
 
-    /// ` WHERE …` over `tests t`: Published, untrashed and matching.
+    /// ` WHERE …` over `tests t`: untrashed, Published unless an Admin is
+    /// searching, and matching.
     fn push_where(&self, sql: &mut QueryBuilder<Postgres>) {
-        sql.push(" WHERE t.published AND t.trashed_at IS NULL");
+        sql.push(" WHERE t.trashed_at IS NULL");
+        if self.viewer == Viewer::Public {
+            sql.push(" AND t.published");
+        }
+        if self.needs_review {
+            sql.push(format_args!(" AND {NEEDS_REVIEW}"));
+        }
         match self.year {
             Filter::Any => {}
             Filter::Unknown => {
@@ -362,6 +394,12 @@ impl Filters {
     }
 }
 
+/// Over `tests t`: the Test is flagged Needs review, or has an untrashed
+/// Document that is flagged or whose PDF failed.
+const NEEDS_REVIEW: &str = "(t.needs_review OR EXISTS (
+        SELECT 1 FROM test_documents td JOIN documents d ON d.id = td.document_id
+        WHERE td.test_id = t.id AND d.trashed_at IS NULL AND (d.needs_review OR d.pdf_status = 'failed')))";
+
 // ------------------------------------------------------------------ results
 
 #[derive(FromRow)]
@@ -374,6 +412,8 @@ struct TestRecord {
     host: Option<String>,
     division_level: Option<String>,
     test_type: Option<String>,
+    published: bool,
+    needs_review: bool,
 }
 
 #[derive(FromRow)]
@@ -398,7 +438,11 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
     let mut sql = QueryBuilder::<Postgres>::new(
         "SELECT t.id, t.year, t.month_applicable,
                 m.name AS month, c.name AS competition, h.name AS host,
-                dl.name AS division_level, tt.name AS test_type
+                dl.name AS division_level, tt.name AS test_type,
+                t.published, ",
+    );
+    sql.push(NEEDS_REVIEW).push(
+        " AS needs_review
          FROM tests t
          LEFT JOIN facet_values m  ON m.id  = t.month_id
          LEFT JOIN facet_values c  ON c.id  = t.competition_id
@@ -430,6 +474,8 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
             division_level: facet_value(t.division_level),
             test_type: facet_value(t.test_type),
             documents: by_test.remove(&t.id).unwrap_or_default(),
+            hidden: !t.published,
+            needs_review: filters.viewer == Viewer::Admin && t.needs_review,
         })
         .collect())
 }
@@ -441,21 +487,28 @@ async fn matching_ids(db: &PgPool, filters: &Filters) -> Result<Vec<i64>, sqlx::
     sql.build_query_scalar().fetch_all(db).await
 }
 
-/// Those of the Tests `ids` that are Published and untrashed, by ID, with
-/// how many Published, untrashed Documents each has in each kind group.
-async fn selected_tests(db: &PgPool, ids: &[i64]) -> Result<Vec<SelectedTest>, sqlx::Error> {
+/// Those of the Tests `ids` that `viewer` may see (untrashed, and Published
+/// unless an Admin is asking), by ID, with how many Published, untrashed
+/// Documents each has in each kind group. A Hidden Test counts none, since
+/// the bulk zip leaves it out.
+async fn selected_tests(db: &PgPool, ids: &[i64], viewer: Viewer) -> Result<Vec<SelectedTest>, sqlx::Error> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let visible: Vec<i64> =
-        sqlx::query_scalar("SELECT id FROM tests WHERE id = ANY($1) AND published AND trashed_at IS NULL ORDER BY id")
-            .bind(ids)
-            .fetch_all(db)
-            .await?;
-    let mut by_test = published_documents(db, &visible).await?;
+    let visible: Vec<(i64, bool)> = sqlx::query_as(
+        "SELECT id, published FROM tests
+         WHERE id = ANY($1) AND trashed_at IS NULL AND (published OR $2)
+         ORDER BY id",
+    )
+    .bind(ids)
+    .bind(viewer == Viewer::Admin)
+    .fetch_all(db)
+    .await?;
+    let published: Vec<i64> = visible.iter().filter(|(_, p)| *p).map(|(id, _)| *id).collect();
+    let mut by_test = published_documents(db, &published).await?;
     Ok(visible
         .into_iter()
-        .map(|id| SelectedTest {
+        .map(|(id, _)| SelectedTest {
             id,
             counts: GroupCounts::of(by_test.remove(&id).unwrap_or_default().iter().map(|d| d.contents)),
         })
@@ -498,13 +551,14 @@ async fn published_documents(db: &PgPool, ids: &[i64]) -> Result<HashMap<i64, Ve
     Ok(by_test)
 }
 
-/// Years that Published Tests have, newest first.
-async fn published_years(db: &PgPool) -> Result<Vec<i16>, sqlx::Error> {
+/// Years that the Tests `viewer` may see have, newest first.
+async fn years(db: &PgPool, viewer: Viewer) -> Result<Vec<i16>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT DISTINCT year FROM tests
-         WHERE published AND trashed_at IS NULL AND year IS NOT NULL
+         WHERE (published OR $1) AND trashed_at IS NULL AND year IS NOT NULL
          ORDER BY year DESC",
     )
+    .bind(viewer == Viewer::Admin)
     .fetch_all(db)
     .await
 }
