@@ -8,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod documents;
 pub mod download_name;
+pub mod import;
 pub mod search;
 pub mod storage;
 pub mod zip;

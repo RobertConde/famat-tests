@@ -73,6 +73,34 @@ The server reads its configuration from the environment:
 - Each file streams into Garage under its Document ID as it arrives, so the server holds at most one 8 MiB part of it. A refused upload deletes whatever it had stored.
 - If the six Facet values match an untrashed Test, the files wait in `pending_uploads` while the Admin chooses: add them to that Test, save a new Test anyway, or discard them. Unanswered ones are swept after a week.
 
+## Importing the old archive
+
+`famat import` builds the archive from the old site's data: the students' sheet, the AI labels, the docs export and the old SQL dump (all kept outside git). Check what it would do first; `--dry-run` only reads the inputs and prints the summary:
+
+```sh
+scripts/with-dev-env.sh cargo run --features server -- import \
+  --sheet "test list - 000final.csv" \
+  --ai-labels data/labels/ai-labels.csv \
+  --docs "<the docs export>" \
+  --legacy-sql doralmao_famat.sql \
+  --dry-run
+```
+
+Without `--dry-run` it replaces the whole archive:
+
+- Every file streams into Garage, and Garage's copy is read back and checked against the source's size and SHA-256 before anything in Postgres changes.
+- Then, in one transaction, the archive tables are wiped and rebuilt, and the ID sequences move past the imported IDs (Tests after 3706, Documents after 10394). Objects under `documents/` that the import didn't write are then deleted.
+- It can run again and again until an Admin changes something. From the first change log entry on, it refuses before touching anything.
+
+What it does with the inputs:
+
+- AI rows replace the sheet's row for the same File Number.
+- Values are tidied: `?`, `-`, blank and year `0` become unknown. Month is not applicable for State, National and Mail-in. Event names become singular. Test type parentheses are dropped. Washington becomes State with Host Washington Mu Alpha Theta.
+- Calculus/Mu "Applications" becomes Mu Applications or Calculus Applications, from the file name, the AI evidence or the file's bytes. Undecided ones become Calculus Applications and get Needs review.
+- Documents with identical labels form one Test. A Test keeps the old `test_id` of the old Test it shares the most Documents with. Documents keep their `tid`.
+- Display orders are seeded as in the spec.
+- The fixture set the tests use, `tests/fixtures/import/`, shows each input's format.
+
 ## Change log
 
 Every Admin write records what changed, before and after, and when, in the `change_log` table, through `server::change_log`. Entries are written inside the same transaction as the change:
@@ -93,6 +121,8 @@ There is one entry per field, with human-readable values (Facet value names, `tr
 - `src/app/add_test.rs`, `src/app/upload_rules.rs`: the Add test page, and the file rules it shares with the server (allowed types, kind guessing, Word+PDF pairing)
 - `src/download.rs`: what the download menus offer (kind groups, Formats), shared by the page and the zip route
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, and plain axum routes such as downloads
+- `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan, and loading it
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)
+- `tests/fixtures/import/`: the synthetic inputs the import tests run on
 - `scripts/`, `dev/`: local Postgres + Garage, and the run, test and bundle commands

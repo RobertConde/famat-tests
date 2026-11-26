@@ -144,7 +144,7 @@ impl StoredFile {
 
 /// The content type an Original of each allowed extension is stored with;
 /// what the browser claimed is ignored.
-fn content_type(extension: &str) -> &'static str {
+pub(super) fn content_type(extension: &str) -> &'static str {
     match extension {
         "pdf" => "application/pdf",
         "doc" => "application/msword",

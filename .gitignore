@@ -3,6 +3,8 @@ code.tar.gz
 *.sql
 # ...except the app's own schema migrations.
 !/migrations/*.sql
+# ...and the import's synthetic test fixture.
+!/tests/fixtures/import/*.sql
 config.ini
 data/
 

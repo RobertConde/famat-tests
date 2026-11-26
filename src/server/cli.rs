@@ -1,5 +1,5 @@
 //! The `famat` command line. With no arguments (as `dx serve` runs it) it
-//! serves the site. Later tickets add `famat import`.
+//! serves the site.
 
 use std::{
     io::{self, BufRead, IsTerminal},
@@ -10,30 +10,37 @@ use std::{
 use super::{
     auth,
     config::{Config, DatabaseConfig},
-    db,
+    db, import,
 };
 
-const USAGE: &str = "\
+fn usage() -> String {
+    format!(
+        "\
 Usage: famat [COMMAND]
 
 Commands:
   serve          Serve the site (the default). Listens on $IP:$PORT (127.0.0.1:8080).
   set-passcode   Set the Admin passcode, ending every Admin session. Reads it
                  from a prompt, or from the first line of stdin when piped.
+{}
 
-Configuration comes from the environment; see README.md.";
+Configuration comes from the environment; see README.md.",
+        import::USAGE
+    )
+}
 
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] | ["serve"] => serve(),
         ["set-passcode"] => set_passcode(),
+        ["import", options @ ..] => import(options),
         ["-h" | "--help" | "help"] => {
-            println!("{USAGE}");
+            println!("{}", usage());
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("famat: unexpected arguments: {}\n\n{USAGE}", args.join(" "));
+            eprintln!("famat: unexpected arguments: {}\n\n{}", args.join(" "), usage());
             ExitCode::from(2)
         }
     }
@@ -105,6 +112,21 @@ fn set_passcode() -> ExitCode {
     }
 }
 
+/// `famat import`: the summary goes to stdout, a refusal or failure to
+/// stderr.
+fn import(options: &[&str]) -> ExitCode {
+    match import::main(options) {
+        Ok(summary) => {
+            print!("{summary}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("famat import: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn read_passcode() -> anyhow::Result<String> {
     if io::stdin().is_terminal() {
         let passcode = rpassword::prompt_password("New Admin passcode: ")?;
@@ -119,7 +141,7 @@ fn read_passcode() -> anyhow::Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
-fn runtime() -> tokio::runtime::Runtime {
+pub(super) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

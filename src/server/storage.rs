@@ -54,7 +54,7 @@ pub struct Object {
 pub const PART_BYTES: usize = 8 * 1024 * 1024;
 
 /// What [`Storage::put_stream`] stored.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stored {
     pub byte_size: i64,
     pub sha256: [u8; 32],
@@ -274,6 +274,51 @@ impl Storage {
             .await
             .with_context(|| format!("deleting {key} from Garage"))?;
         Ok(())
+    }
+
+    /// Where every Document's files live: the prefix of their keys.
+    pub fn documents_prefix(&self) -> String {
+        format!("{}documents/", self.key_prefix)
+    }
+
+    /// Every key starting with `prefix`.
+    pub async fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+        let mut keys = Vec::new();
+        let mut pages = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .into_paginator()
+            .send();
+        while let Some(page) = pages.next().await {
+            let page = page.with_context(|| format!("listing {prefix} in Garage"))?;
+            keys.extend(page.contents().iter().filter_map(|o| o.key().map(str::to_owned)));
+        }
+        Ok(keys)
+    }
+
+    /// Read an object back and hash it, streaming. `Ok(None)` when it does
+    /// not exist.
+    pub async fn stored(&self, key: &str) -> anyhow::Result<Option<Stored>> {
+        let Some(object) = self.get(key).await? else {
+            return Ok(None);
+        };
+        let mut body = object.body;
+        let mut hasher = Sha256::new();
+        let mut byte_size = 0;
+        while let Some(chunk) = body
+            .try_next()
+            .await
+            .with_context(|| format!("reading {key} from Garage"))?
+        {
+            byte_size += chunk.len() as i64;
+            hasher.update(&chunk);
+        }
+        Ok(Some(Stored {
+            byte_size,
+            sha256: hasher.finalize().into(),
+        }))
     }
 
     /// Delete every file a Document may have, logging rather than returning
