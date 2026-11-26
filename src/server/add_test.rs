@@ -52,7 +52,7 @@ const PENDING_DAYS: i32 = 7;
 
 /// What one dropdown chose.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum Choice {
+pub(super) enum Choice {
     Unknown,
     /// Month only.
     NotApplicable,
@@ -63,9 +63,9 @@ enum Choice {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Facets {
-    year: Option<i16>,
-    month: Choice,
+pub(super) struct Facets {
+    pub(super) year: Option<i16>,
+    pub(super) month: Choice,
     competition: Choice,
     division_level: Choice,
     test_type: Choice,
@@ -73,7 +73,7 @@ struct Facets {
 }
 
 impl Facets {
-    fn listed(&self) -> [(&'static str, &Choice); 5] {
+    pub(super) fn listed(&self) -> [(&'static str, &Choice); 5] {
         [
             ("month", &self.month),
             ("competition", &self.competition),
@@ -94,7 +94,7 @@ pub struct Plan {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct PlannedDocument {
+pub(super) struct PlannedDocument {
     /// Drawn from the `documents` sequence; its files are already in Garage.
     id: i64,
     kind_id: i64,
@@ -119,7 +119,7 @@ impl PlannedDocument {
 
 /// A file in Garage, as `document_files` records it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct StoredFile {
+pub(super) struct StoredFile {
     /// The name it was uploaded with; kept only in the change log.
     name: String,
     extension: String,
@@ -130,7 +130,7 @@ struct StoredFile {
 
 impl StoredFile {
     /// How the change log shows it.
-    fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         format!("{} ({} bytes, sha256 {})", self.name, self.byte_size, self.sha256)
     }
 }
@@ -154,24 +154,35 @@ pub(super) fn content_type(extension: &str) -> &'static str {
 // ------------------------------------------------------------------ upload
 
 /// A refusal shown to the Admin as a page, after which nothing was saved.
-struct Refusal {
+/// Shared with the Test edit page (`server::test_edit`), which points its
+/// link back there.
+pub(super) struct Refusal {
     status: StatusCode,
     message: String,
+    /// The page to go back to, and the link's text.
+    back: (String, &'static str),
 }
 
 impl Refusal {
-    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+    pub(super) fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
+            back: ("/admin/tests/new".to_owned(), "Back to Add test"),
         }
     }
 
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(super) fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
-    fn internal(e: impl std::fmt::Display) -> Self {
+    /// Link back to `href` instead of Add test.
+    pub(super) fn back_to(mut self, href: String, text: &'static str) -> Self {
+        self.back = (href, text);
+        self
+    }
+
+    pub(super) fn internal(e: impl std::fmt::Display) -> Self {
         dioxus::logger::tracing::error!("add test: {e:#}");
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -179,7 +190,7 @@ impl Refusal {
         )
     }
 
-    fn multipart(e: MultipartError) -> Self {
+    pub(super) fn multipart(e: MultipartError) -> Self {
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -190,8 +201,9 @@ impl Refusal {
         }
     }
 
-    fn response(&self) -> Response {
+    pub(super) fn response(&self) -> Response {
         let message = escape_html(&self.message);
+        let (back, back_text) = (escape_html(&self.back.0), self.back.1);
         let page = format!(
             "<!DOCTYPE html>\
 <html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -201,7 +213,7 @@ impl Refusal {
 main{{max-width:64rem;margin:0 auto;padding:1rem}}#refusal{{color:#b00020}}</style></head>\
 <body><main><h1>Nothing was saved</h1>\
 <p id=\"refusal\">{message}</p>\
-<p><a href=\"/admin/tests/new\">Back to Add test</a></p>\
+<p><a href=\"{back}\">{back_text}</a></p>\
 </main></body></html>"
         );
         (self.status, [(header::CACHE_CONTROL, "no-store")], Html(page)).into_response()
@@ -219,7 +231,7 @@ struct Received {
 }
 
 #[derive(Default)]
-struct Upload {
+pub(super) struct Upload {
     /// Text fields; the first of each name wins.
     fields: HashMap<String, String>,
     /// Files seen so far, including refused ones.
@@ -228,11 +240,24 @@ struct Upload {
     documents: Vec<Received>,
 }
 
-impl Upload {
-    fn field(&self, name: &str) -> &str {
-        self.fields.get(name).map_or("", |v| v.trim())
-    }
+/// The text fields of a posted form, trimmed; empty when absent.
+pub(super) trait Fields {
+    fn field(&self, name: &str) -> &str;
+}
 
+impl Fields for HashMap<String, String> {
+    fn field(&self, name: &str) -> &str {
+        self.get(name).map_or("", |v| v.trim())
+    }
+}
+
+impl Fields for Upload {
+    fn field(&self, name: &str) -> &str {
+        self.fields.field(name)
+    }
+}
+
+impl Upload {
     async fn receive_file(&mut self, state: &AppState, file_name: String, field: Field<'_>) -> Result<(), Refusal> {
         let index = self.files;
         self.files += 1;
@@ -296,7 +321,7 @@ impl Upload {
     }
 
     /// Delete every file stored so far.
-    async fn discard(&self, state: &AppState) {
+    pub(super) async fn discard(&self, state: &AppState) {
         for document in &self.documents {
             state.storage.delete_document_files(document.id).await;
         }
@@ -346,7 +371,11 @@ pub async fn upload(
 }
 
 /// Read every field after the CSRF token, storing files as they come.
-async fn receive(state: &AppState, form: &mut MultipartFormData, upload: &mut Upload) -> Result<(), Refusal> {
+pub(super) async fn receive(
+    state: &AppState,
+    form: &mut MultipartFormData,
+    upload: &mut Upload,
+) -> Result<(), Refusal> {
     loop {
         let field = match form.next_field().await {
             Ok(Some(field)) => field,
@@ -367,7 +396,9 @@ async fn receive(state: &AppState, form: &mut MultipartFormData, upload: &mut Up
     }
 }
 
-async fn drain(form: &mut MultipartFormData) {
+/// Read the rest of a multipart body, so the browser is still listening
+/// when an early refusal arrives. (#47 replaces this with a shared helper.)
+pub(super) async fn drain(form: &mut MultipartFormData) {
     while let Ok(Some(mut field)) = form.next_field().await {
         while let Ok(Some(_)) = field.chunk().await {}
     }
@@ -375,19 +406,32 @@ async fn drain(form: &mut MultipartFormData) {
 
 /// The Facet choices, kinds and labels of a fully received upload.
 async fn plan(state: &AppState, upload: &Upload) -> Result<Plan, Refusal> {
+    let documents = planned_documents(state, upload).await?;
+    let values = FacetValueList::load(&state.db).await.map_err(Refusal::internal)?;
+    Ok(Plan {
+        facets: facet_choices(&values, upload)?,
+        publish: upload.field("save") == "publish",
+        documents,
+    })
+}
+
+/// The six dropdowns' choices in a posted form.
+pub(super) fn facet_choices(values: &FacetValueList, fields: &impl Fields) -> Result<Facets, Refusal> {
+    Ok(Facets {
+        year: year_choice(fields)?,
+        month: choice(values, fields, "month", "Month")?,
+        competition: choice(values, fields, "competition", "Competition")?,
+        division_level: choice(values, fields, "division_level", "Division/Level")?,
+        test_type: choice(values, fields, "test_type", "Test type")?,
+        host: choice(values, fields, "host", "Host")?,
+    })
+}
+
+/// The Documents of a fully received upload, with their kinds and labels.
+pub(super) async fn planned_documents(state: &AppState, upload: &Upload) -> Result<Vec<PlannedDocument>, Refusal> {
     if upload.documents.is_empty() {
         return Err(Refusal::bad_request("Choose at least one file to add."));
     }
-    let values = FacetValueList::load(&state.db).await.map_err(Refusal::internal)?;
-    let facets = Facets {
-        year: year_choice(upload)?,
-        month: choice(&values, upload, "month", "Month")?,
-        competition: choice(&values, upload, "competition", "Competition")?,
-        division_level: choice(&values, upload, "division_level", "Division/Level")?,
-        test_type: choice(&values, upload, "test_type", "Test type")?,
-        host: choice(&values, upload, "host", "Host")?,
-    };
-
     let kinds = document_kinds(&state.db).await.map_err(Refusal::internal)?;
     let mut documents = Vec::with_capacity(upload.documents.len());
     for received in &upload.documents {
@@ -423,16 +467,12 @@ async fn plan(state: &AppState, upload: &Upload) -> Result<Plan, Refusal> {
             pdf,
         });
     }
-    Ok(Plan {
-        facets,
-        publish: upload.field("save") == "publish",
-        documents,
-    })
+    Ok(documents)
 }
 
-fn year_choice(upload: &Upload) -> Result<Option<i16>, Refusal> {
-    let typed = upload.field("year_new");
-    let raw = if typed.is_empty() { upload.field("year") } else { typed };
+fn year_choice(fields: &impl Fields) -> Result<Option<i16>, Refusal> {
+    let typed = fields.field("year_new");
+    let raw = if typed.is_empty() { fields.field("year") } else { typed };
     match raw {
         "" => Err(Refusal::bad_request("Choose the Year, or Unknown.")),
         "unknown" => Ok(None),
@@ -447,14 +487,14 @@ fn year_choice(upload: &Upload) -> Result<Option<i16>, Refusal> {
 /// The dropdown `facet`'s choice. Text under **+ New value** wins over the
 /// dropdown, and names an existing value (or alias, ignoring case) when
 /// there is one.
-fn choice(values: &FacetValueList, upload: &Upload, facet: &str, label: &str) -> Result<Choice, Refusal> {
-    let typed = upload.field(&format!("{facet}_new"));
+fn choice(values: &FacetValueList, fields: &impl Fields, facet: &str, label: &str) -> Result<Choice, Refusal> {
+    let typed = fields.field(&format!("{facet}_new"));
     if !typed.is_empty() {
         return Ok(values
             .find(facet, typed)
             .map_or_else(|| Choice::New(typed.to_owned()), Choice::Value));
     }
-    match upload.field(facet) {
+    match fields.field(facet) {
         "" => Err(Refusal::bad_request(format!("Choose the {label}, or Unknown."))),
         "unknown" => Ok(Choice::Unknown),
         "not_applicable" if facet == "month" => Ok(Choice::NotApplicable),
@@ -471,7 +511,7 @@ fn choice(values: &FacetValueList, upload: &Upload, facet: &str, label: &str) ->
 }
 
 /// `(id, name)` of every Document kind, in display order.
-async fn document_kinds(db: &PgPool) -> Result<Vec<(i64, String)>, sqlx::Error> {
+pub(super) async fn document_kinds(db: &PgPool) -> Result<Vec<(i64, String)>, sqlx::Error> {
     sqlx::query_as("SELECT id, name FROM document_kinds ORDER BY display_order, name")
         .fetch_all(db)
         .await
@@ -556,9 +596,9 @@ impl Saved {
 }
 
 /// A Facet value as saved: its ID and, for the change log, its name.
-struct Resolved {
-    id: Option<i64>,
-    name: Option<String>,
+pub(super) struct Resolved {
+    pub(super) id: Option<i64>,
+    pub(super) name: Option<String>,
 }
 
 /// Write the plan into the transaction, with its change log entries.
@@ -623,8 +663,23 @@ async fn commit(tx: &mut Transaction<'_, Postgres>, plan: &Plan, target: Target)
         }
         Target::Existing(id) => (id, false, plan.publish),
     };
+    add_documents(tx, test_id, &plan.documents, documents_published).await?;
+    Ok(Saved {
+        test_id,
+        publish_refused,
+    })
+}
 
-    for document in &plan.documents {
+/// Write Documents whose files are already in Garage, attached to one
+/// Test, with their change log entries, queuing the conversions they need.
+/// The caller wakes the PDF queue after committing.
+pub(super) async fn add_documents(
+    tx: &mut Transaction<'_, Postgres>,
+    test_id: i64,
+    documents: &[PlannedDocument],
+    documents_published: bool,
+) -> anyhow::Result<()> {
+    for document in documents {
         let pdf_status = document.pdf_status();
         sqlx::query(
             "INSERT INTO documents (id, kind_id, label, published, label_source, pdf_status)
@@ -678,15 +733,16 @@ async fn commit(tx: &mut Transaction<'_, Postgres>, plan: &Plan, target: Target)
         )
         .await?;
     }
-    Ok(Saved {
-        test_id,
-        publish_refused,
-    })
+    Ok(())
 }
 
 /// The ID and name of a Facet choice, creating (and logging) a new value at
 /// the end of its Facet's display order.
-async fn resolve(tx: &mut Transaction<'_, Postgres>, facet: &str, choice: &Choice) -> anyhow::Result<Resolved> {
+pub(super) async fn resolve(
+    tx: &mut Transaction<'_, Postgres>,
+    facet: &str,
+    choice: &Choice,
+) -> anyhow::Result<Resolved> {
     let id = match choice {
         Choice::Unknown | Choice::NotApplicable => return Ok(Resolved { id: None, name: None }),
         Choice::Value(id) => *id,
@@ -859,8 +915,9 @@ pub async fn page(
     page_data(&state.db, csrf, added, pending).await.map_err(internal_error)
 }
 
-async fn page_data(db: &PgPool, csrf: String, added: &str, pending: &str) -> anyhow::Result<AddTestPage> {
-    let values = FacetValueList::load(db).await?;
+/// The six Facet dropdowns, in order, with nothing chosen: every Year in use
+/// and each listed Facet's values.
+pub(super) async fn facet_options(db: &PgPool, values: &FacetValueList) -> Result<Vec<FacetOptions>, sqlx::Error> {
     let years: Vec<i16> = sqlx::query_scalar(
         "SELECT DISTINCT year FROM tests WHERE trashed_at IS NULL AND year IS NOT NULL ORDER BY year DESC",
     )
@@ -871,6 +928,7 @@ async fn page_data(db: &PgPool, csrf: String, added: &str, pending: &str) -> any
         label: "Year".to_owned(),
         options: years.iter().map(|y| (y.to_string(), y.to_string())).collect(),
         not_applicable: false,
+        selected: String::new(),
     }];
     for (facet, label) in LISTED_FACETS {
         facets.push(FacetOptions {
@@ -883,8 +941,15 @@ async fn page_data(db: &PgPool, csrf: String, added: &str, pending: &str) -> any
                 .map(|(_, id, name)| (id.to_string(), name.clone()))
                 .collect(),
             not_applicable: facet == "month",
+            selected: String::new(),
         });
     }
+    Ok(facets)
+}
+
+async fn page_data(db: &PgPool, csrf: String, added: &str, pending: &str) -> anyhow::Result<AddTestPage> {
+    let values = FacetValueList::load(db).await?;
+    let facets = facet_options(db, &values).await?;
     let kinds = document_kinds(db).await?.into_iter().map(|(_, name)| name).collect();
 
     let added = match added.parse::<i64>() {
@@ -974,7 +1039,7 @@ async fn summary(db: &PgPool, id: i64) -> Result<Option<TestSummary>, sqlx::Erro
 
 /// "1993 February Invitational · Plant City · Calculus/Mu Individual", with
 /// a dash for each unknown value. `month` is `None` when not applicable.
-fn describe(
+pub(super) fn describe(
     year: Option<i16>,
     month: Option<Option<&str>>,
     competition: Option<&str>,

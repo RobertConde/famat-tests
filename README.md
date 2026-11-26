@@ -90,6 +90,17 @@ The server reads its configuration from the environment:
 - Each file streams into Garage under its Document ID as it arrives, so the server holds at most one 8 MiB part of it. A refused upload deletes whatever it had stored.
 - If the six Facet values match an untrashed Test, the files wait in `pending_uploads` while the Admin chooses: add them to that Test, save a new Test anyway, or discard them. Unanswered ones are swept after a week.
 
+## Editing Tests
+
+An Admin sees an **Edit** link on each result row, which opens the Test edit page (`/admin/tests/{id}/edit`, logic in `server::test_edit`). Each part is its own native form post, CSRF-checked and written to the change log, and comes back to the page:
+
+- **Test:** the six Facet dropdowns (with **+ New value**, as on Add test), Published/Hidden, and Needs review with its comment. Publishing a Test whose Year and Competition are both unknown is refused.
+- **Each Document:** kind, label, Published/Hidden and Needs review. Saving sets its label source to Admin. Unticking Needs review clears its comment too.
+- **Retry PDF / Upload PDF:** the PDF problems page's forms.
+- **Replace original:** the same types and limit as Add test. The file streams over `documents/{id}/original` (a refused or cut-off upload leaves the old one), any PDF, made or supplied, is dropped, and the Document is queued for conversion afresh.
+- **Also on Tests…:** attach the Document to another untrashed Test by ID (`T123` or `123`), or detach it. It shows, and downloads under its own ID, on every Test it is on. Detaching it from its last Test is refused.
+- **+ Add files:** Add test's drop zone and rules (kinds, labels, Word+PDF pairs), adding Documents to this Test, hidden or published.
+
 ## Importing the old archive
 
 `famat import` builds the archive from the old site's data, all kept outside git:
@@ -225,6 +236,7 @@ state.pdf.wake();
 - `src/app/document_kinds.rs`: the Document kinds page
 - `src/app/facet_values.rs`: the Facet values page
 - `src/app/pdf.rs`: the PDF problems page, and the Upload PDF / Retry PDF / Retry all failed forms
+- `src/app/test_edit.rs`: the Test edit page
 - `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, the PDF queue (`pdf/`), and plain axum routes such as downloads
 - `src/server/import/`: `famat import`: reading the inputs, tidying, the import plan and its special cases, loading it, and the reconciliation report

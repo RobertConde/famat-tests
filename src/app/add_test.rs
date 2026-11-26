@@ -47,6 +47,9 @@ pub struct FacetOptions {
     pub options: Vec<(String, String)>,
     /// Month only: offer **Not applicable** (State, National, Mail-in).
     pub not_applicable: bool,
+    /// The option chosen when the page loads: a value as in `options`,
+    /// `unknown` or `not_applicable`; empty for "Choose…".
+    pub selected: String,
 }
 
 /// A Test and its Documents, as an Admin checks them after saving.
@@ -233,9 +236,10 @@ fn AddTestForm(csrf: String, facets: Vec<FacetOptions>, kinds: Vec<String>) -> E
 }
 
 /// One dropdown: the values, Unknown, (Not applicable,) and **+ New value**,
-/// whose text field shows when it is picked.
+/// whose text field shows when it is picked. Shared with the Test edit page,
+/// which preselects the Test's values; its parent needs the `add-test` class.
 #[component]
-fn FacetField(facet: FacetOptions) -> Element {
+pub(crate) fn FacetField(facet: FacetOptions) -> Element {
     let id = format!("f-{}", facet.name);
     let new_name = format!("{}_new", facet.name);
     let new_label = format!("New {}", facet.label);
@@ -244,13 +248,13 @@ fn FacetField(facet: FacetOptions) -> Element {
             label { r#for: "{id}", "{facet.label}:" }
             div { class: "control",
                 select { id: "{id}", name: "{facet.name}", required: true,
-                    option { value: "", disabled: true, selected: true, "Choose…" }
+                    option { value: "", disabled: true, selected: facet.selected.is_empty(), "Choose…" }
                     for (value, text) in facet.options.iter() {
-                        option { key: "{value}", value: "{value}", "{text}" }
+                        option { key: "{value}", value: "{value}", selected: *value == facet.selected, "{text}" }
                     }
-                    option { value: "unknown", "Unknown" }
+                    option { value: "unknown", selected: facet.selected == "unknown", "Unknown" }
                     if facet.not_applicable {
-                        option { value: "not_applicable", "Not applicable" }
+                        option { value: "not_applicable", selected: facet.selected == "not_applicable", "Not applicable" }
                     }
                     option { value: "new", "+ New value…" }
                 }
@@ -315,9 +319,10 @@ fn preview(files: &[Picked]) -> Vec<Preview> {
 
 /// The drop zone: the native file input, styled as a large target (dropping
 /// files onto a file input works without JavaScript). After hydration it
-/// lists the chosen files with a kind and a label field for each.
+/// lists the chosen files with a kind and a label field for each. Shared
+/// with the Test edit page's **+ Add files**.
 #[component]
-fn FilePicker(kinds: Vec<String>) -> Element {
+pub(crate) fn FilePicker(kinds: Vec<String>) -> Element {
     let mut files = use_signal(Vec::<Picked>::new);
     let picked = files.read().clone();
     let rows = preview(&picked);
