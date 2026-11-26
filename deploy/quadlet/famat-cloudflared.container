@@ -1,0 +1,30 @@
+# cloudflared: the only connection to the outside. It dials out to
+# Cloudflare and forwards famat.rconde.xyz and tests.famat.org to the app on
+# 127.0.0.1:8080. The tunnel is remotely managed (its routes are set in
+# Cloudflare, docs/deploy/cloudflare.md); the token is the famat-tunnel-token
+# Podman secret.
+#
+# Keep the original Host header (no httpHostHeader / originRequest override):
+# the app refuses writes whose Origin does not match the Host.
+
+[Unit]
+Description=FAMAT Test Bank Cloudflare Tunnel
+BindsTo=famat-net.service
+After=famat-net.service
+After=famat-app.service
+
+[Container]
+ContainerName=famat-cloudflared
+# famat-net's network namespace: 127.0.0.1 is shared with the others.
+Network=famat-net.container
+Image=docker.io/cloudflare/cloudflared:latest
+AutoUpdate=registry
+Exec=tunnel --no-autoupdate run
+Secret=famat-tunnel-token,type=env,target=TUNNEL_TOKEN
+
+[Service]
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target default.target

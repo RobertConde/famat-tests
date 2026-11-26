@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# The *_ENABLED settings are read indirectly, in run_all.
+# shellcheck disable=SC2034
+# Nightly backups of everything on this server to restic (a Hetzner Storage
+# Box over SFTP), run by famat-backup.timer. Settings: /etc/famat/backup.conf
+# (deploy/backup/backup.conf.example).
+#
+#   famat-backup            the nightly run: every enabled part, then forget
+#                           and prune, then (on CHECK_WEEKDAY) restic check,
+#                           then the Better Stack heartbeat
+#   famat-backup part NAME  just one part: famat, nextcloud or webwork
+#   famat-backup check      just restic check
+#   famat-backup restic …   any restic command against the configured
+#                           repository (snapshots, dump, restore, …)
+#
+# Each part writes a consistent dump to the staging directory first, then
+# backs it up (with the service's live files, where it has some) as its own
+# snapshot, tagged with the part's name:
+#
+#   famat      pg_dump of the app database, and the Garage bucket copied out
+#              with rclone (incrementally, into the same staging copy)
+#   nextcloud  maintenance mode on, database dump, data/ and config/, then
+#              maintenance mode off (always, even on failure)
+#   webwork    MariaDB dump, and courses/
+#
+# A part that fails does not stop the others, but the run then exits non-zero
+# and sends Better Stack a failure ping.
+set -euo pipefail
+
+CONF="${FAMAT_BACKUP_CONF:-/etc/famat/backup.conf}"
+
+# ---------------------------------------------------------------- defaults
+STAGING=/var/backups/famat-staging
+RESTIC=restic
+KEEP_DAILY=7
+KEEP_WEEKLY=4
+KEEP_MONTHLY=12
+CHECK_WEEKDAY=7            # 1 = Monday … 7 = Sunday; empty: never
+CHECK_READ_DATA_SUBSET=    # e.g. 2% to also read back that much data
+BETTERSTACK_HEARTBEAT_URL=
+LOCK_FILE=/run/famat-backup.lock
+
+FAMAT_ENABLED=1
+FAMAT_NET=famat-net
+FAMAT_POSTGRES_CONTAINER=famat-postgres
+FAMAT_DB_NAME=famat
+FAMAT_DB_USER=famat
+FAMAT_S3_ENDPOINT=http://127.0.0.1:3900
+FAMAT_S3_REGION=garage
+FAMAT_S3_BUCKET=famat
+FAMAT_S3_KEY_ID_SECRET=famat-s3-access-key-id
+FAMAT_S3_SECRET_KEY_SECRET=famat-s3-secret-access-key
+RCLONE_IMAGE=docker.io/rclone/rclone:1
+
+NEXTCLOUD_ENABLED=0
+NEXTCLOUD_OCC=(sudo -u www-data php /var/www/nextcloud/occ)
+NEXTCLOUD_DB_DUMP=(mysqldump --single-transaction --default-character-set=utf8mb4 nextcloud)
+NEXTCLOUD_PATHS=(/var/www/nextcloud/data /var/www/nextcloud/config)
+
+WEBWORK_ENABLED=0
+WEBWORK_DB_DUMP=(mysqldump --single-transaction webwork)
+WEBWORK_PATHS=(/opt/webwork/courses)
+
+if [ -f "$CONF" ]; then
+  # shellcheck source=/dev/null
+  . "$CONF"
+fi
+# restic reads its repository and password from the environment.
+export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
+
+log() { echo "famat-backup: $*"; }
+
+backup() { # backup TAG PATH...
+  local tag="$1"; shift
+  "$RESTIC" backup --tag "$tag" --exclude-caches --one-file-system "$@"
+}
+
+# ------------------------------------------------------------------- parts
+
+part_famat() {
+  local dir="$STAGING/famat"
+  mkdir -p "$dir/garage"
+  chmod 700 "$STAGING"
+
+  log "famat: pg_dump $FAMAT_DB_NAME"
+  podman exec "$FAMAT_POSTGRES_CONTAINER" \
+    pg_dump -U "$FAMAT_DB_USER" -d "$FAMAT_DB_NAME" --format=custom --compress=0 \
+    > "$dir/famat.pgdump.tmp"
+  mv "$dir/famat.pgdump.tmp" "$dir/famat.pgdump"
+
+  # rclone runs in a throwaway container in famat-net's network namespace,
+  # since Garage listens only on its loopback. The key comes straight from the Podman secrets.
+  log "famat: copying bucket $FAMAT_S3_BUCKET"
+  podman run --rm --network "container:$FAMAT_NET" \
+    --secret "$FAMAT_S3_KEY_ID_SECRET,type=env,target=RCLONE_S3_ACCESS_KEY_ID" \
+    --secret "$FAMAT_S3_SECRET_KEY_SECRET,type=env,target=RCLONE_S3_SECRET_ACCESS_KEY" \
+    -v "$dir/garage:/staging" \
+    "$RCLONE_IMAGE" sync ":s3:$FAMAT_S3_BUCKET" /staging \
+      --s3-provider Other --s3-endpoint "$FAMAT_S3_ENDPOINT" \
+      --s3-region "$FAMAT_S3_REGION" --s3-force-path-style \
+      --fast-list --stats-one-line --stats 0
+
+  log "famat: restic backup"
+  backup famat "$dir"
+}
+
+part_nextcloud() {
+  local dir="$STAGING/nextcloud"
+  mkdir -p "$dir"
+  chmod 700 "$STAGING"
+
+  log "nextcloud: maintenance mode on"
+  "${NEXTCLOUD_OCC[@]}" maintenance:mode --on
+  # From here on, leave maintenance mode however this part ends.
+  trap 'log "nextcloud: maintenance mode off"; "${NEXTCLOUD_OCC[@]}" maintenance:mode --off' EXIT
+
+  log "nextcloud: database dump"
+  "${NEXTCLOUD_DB_DUMP[@]}" > "$dir/nextcloud-db.sql.tmp"
+  mv "$dir/nextcloud-db.sql.tmp" "$dir/nextcloud-db.sql"
+
+  log "nextcloud: restic backup"
+  backup nextcloud "$dir" "${NEXTCLOUD_PATHS[@]}"
+}
+
+part_webwork() {
+  local dir="$STAGING/webwork"
+  mkdir -p "$dir"
+  chmod 700 "$STAGING"
+
+  log "webwork: database dump"
+  "${WEBWORK_DB_DUMP[@]}" > "$dir/webwork-db.sql.tmp"
+  mv "$dir/webwork-db.sql.tmp" "$dir/webwork-db.sql"
+
+  log "webwork: restic backup"
+  backup webwork "$dir" "${WEBWORK_PATHS[@]}"
+}
+
+check() {
+  if [ -n "$CHECK_READ_DATA_SUBSET" ]; then
+    "$RESTIC" check --read-data-subset="$CHECK_READ_DATA_SUBSET"
+  else
+    "$RESTIC" check
+  fi
+}
+
+ping() { # ping [/fail]
+  [ -n "$BETTERSTACK_HEARTBEAT_URL" ] || return 0
+  curl -fsS -m 10 --retry 3 -o /dev/null "$BETTERSTACK_HEARTBEAT_URL$1" \
+    || log "could not reach Better Stack ($1)"
+}
+
+# -------------------------------------------------------------------- main
+
+run_all() {
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    log "another backup is running"
+    ping /fail
+    exit 1
+  fi
+
+  # An unexpected exit (a bug in this script, a signal) still pings failure.
+  # shellcheck disable=SC2154
+  trap 'status=$?; if [ "$status" -ne 0 ]; then log "failed ($status)"; ping /fail; fi' EXIT
+
+  local failed=()
+  local self
+  self="$(readlink -f "$0")"
+  # Each part runs as its own process, so `set -e` holds inside it.
+  for part in famat nextcloud webwork; do
+    local enabled_var="${part^^}_ENABLED"
+    [ "${!enabled_var}" = 1 ] || continue
+    if ! "$self" part "$part"; then
+      log "$part: FAILED"
+      failed+=("$part")
+    fi
+  done
+
+  log "forget and prune (keep $KEEP_DAILY daily, $KEEP_WEEKLY weekly, $KEEP_MONTHLY monthly)"
+  "$RESTIC" forget --prune --group-by host,tags \
+    --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY"
+
+  if [ -n "$CHECK_WEEKDAY" ] && [ "$(date +%u)" = "$CHECK_WEEKDAY" ]; then
+    log "restic check"
+    check
+  fi
+
+  if [ "${#failed[@]}" -gt 0 ]; then
+    log "failed parts: ${failed[*]}"
+    exit 1
+  fi
+  ping ""
+  log "done"
+}
+
+case "${1:-}" in
+  "") run_all ;;
+  part)
+    case "${2:-}" in
+      famat) part_famat ;;
+      nextcloud) part_nextcloud ;;
+      webwork) part_webwork ;;
+      *) echo "usage: famat-backup part famat|nextcloud|webwork" >&2; exit 2 ;;
+    esac
+    ;;
+  check) check ;;
+  restic) shift; exec "$RESTIC" "$@" ;;
+  *) echo "usage: famat-backup [part NAME | check | restic ARGS…]" >&2; exit 2 ;;
+esac

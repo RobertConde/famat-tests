@@ -1,0 +1,62 @@
+# famat-backup settings: /etc/famat/backup.conf (root, mode 0600).
+# This file is bash, sourced by famat-backup. Anything left out keeps the
+# default shown in deploy/backup/famat-backup. Never commit the real one.
+
+# ------------------------------------------------------------------ restic
+# The Hetzner Storage Box over SFTP. "storagebox" is the Host alias in
+# /root/.ssh/config (docs/deploy/server-setup.md); the path is relative to
+# the Storage Box's home directory.
+RESTIC_REPOSITORY=sftp:storagebox:famat-restic
+# The repository password: a random string, kept here AND in the owner's
+# password manager. Without it the backups cannot be read.
+RESTIC_PASSWORD_FILE=/etc/famat/restic-password
+
+# Where the dumps and the Garage copy are written before restic reads them.
+# Needs room for a full copy of the Garage bucket.
+STAGING=/var/backups/famat-staging
+
+# Retention: 7 daily / 4 weekly / 12 monthly, per part (host + tag).
+KEEP_DAILY=7
+KEEP_WEEKLY=4
+KEEP_MONTHLY=12
+
+# `restic check` once a week (1 = Monday … 7 = Sunday). Optionally also read
+# back a share of the data each time, e.g. CHECK_READ_DATA_SUBSET=2%.
+CHECK_WEEKDAY=7
+CHECK_READ_DATA_SUBSET=
+
+# The Better Stack heartbeat URL (Uptime → Heartbeats → the heartbeat's URL).
+# Success pings it; failure pings $URL/fail. Empty: no pings.
+BETTERSTACK_HEARTBEAT_URL=
+
+# -------------------------------------------------------------- test bank
+FAMAT_ENABLED=1
+# These match deploy/quadlet/ and rarely change.
+#FAMAT_NET=famat-net
+#FAMAT_POSTGRES_CONTAINER=famat-postgres
+#FAMAT_DB_NAME=famat
+#FAMAT_S3_BUCKET=famat
+#RCLONE_IMAGE=docker.io/rclone/rclone:1
+
+# ---------------------------------------------------------------- Nextcloud
+# Set to 1 once the paths below match this server's Nextcloud.
+NEXTCLOUD_ENABLED=0
+# The occ command. For a container install, e.g.
+#   NEXTCLOUD_OCC=(podman exec -u www-data nextcloud php occ)
+NEXTCLOUD_OCC=(sudo -u www-data php /var/www/nextcloud/occ)
+# A command that writes the database dump to stdout. The database name is
+# config.php's 'dbname'. As root, Debian's MariaDB needs no password (unix
+# socket auth). For PostgreSQL:
+#   NEXTCLOUD_DB_DUMP=(sudo -u postgres pg_dump nextcloud)
+NEXTCLOUD_DB_DUMP=(mysqldump --single-transaction --default-character-set=utf8mb4 nextcloud)
+# Backed up while maintenance mode is on: 'datadirectory' from config.php,
+# and config/ (it holds the instance's secret and salt, needed to restore).
+NEXTCLOUD_PATHS=(/var/www/nextcloud/data /var/www/nextcloud/config)
+
+# ----------------------------------------------------------------- WeBWorK
+# Set to 1 once the paths below match this server's WeBWorK.
+WEBWORK_ENABLED=0
+# The database is $database_dsn's name in webwork2/conf/site.conf.
+WEBWORK_DB_DUMP=(mysqldump --single-transaction webwork)
+# courses/, plus the site configuration so a restore has it.
+WEBWORK_PATHS=(/opt/webwork/courses /opt/webwork/webwork2/conf)

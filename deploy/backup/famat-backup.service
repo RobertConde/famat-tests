@@ -1,0 +1,16 @@
+[Unit]
+Description=Nightly restic backup (FAMAT Test Bank, Nextcloud, WeBWorK)
+Wants=network-online.target
+After=network-online.target famat-app.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/famat-backup
+# restic's local cache of the repository's index (a service has no $HOME).
+CacheDirectory=restic
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
+# Do not let a backup slow the site or the other services down much.
+Nice=10
+IOSchedulingClass=idle
+# A first full upload can take many hours; later runs take minutes.
+TimeoutStartSec=12h
