@@ -35,9 +35,6 @@ use crate::{
     },
 };
 
-/// The Upload PDF post: one file of at most 100 MB, plus its fields.
-pub const MAX_BODY_BYTES: usize = MAX_FILE_BYTES as usize + 1024 * 1024;
-
 /// How many of the Documents being prepared the page lists.
 const PREPARING_LISTED: i64 = 50;
 

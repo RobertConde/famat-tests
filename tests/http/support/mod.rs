@@ -24,6 +24,7 @@ pub mod fixtures;
 pub mod html;
 pub mod import;
 pub mod pdf;
+pub mod staging;
 pub mod zip;
 
 use std::{

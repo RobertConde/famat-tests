@@ -95,18 +95,33 @@ async fn add_test_refusals_arrive_whole_however_much_body_is_left() {
         assert_eq!(refusal(&body), "Choose the Host, or Unknown.");
     }
 
-    // A file over 100 MB, with more files behind it.
+    // A file over 90 MB, with more files behind it (but the post under its
+    // own 95 MB).
     let form = app
         .add_test_form(&cookie)
         .await
         .test(&NewTest::known())
-        .generated_file("T_Huge.pdf", 100 * MIB + 1)
-        .generated_file("S_Big.pdf", TRAILING);
+        .generated_file("T_Huge.pdf", 90_000_001)
+        .generated_file("S_Big.pdf", 2 * MIB);
     let (status, body) = complete(Ok(app.submit_add_test(&cookie, form, "publish").await), "size").await;
     assert_eq!(status, 413, "size: {body}");
     assert_eq!(
         refusal(&body),
-        "“T_Huge.pdf” can’t be added: files can be at most 100 MB."
+        "“T_Huge.pdf” can’t be added: files can be at most 90 MB."
+    );
+
+    // A post over 95 MB, every file under 90 MB.
+    let form = app
+        .add_test_form(&cookie)
+        .await
+        .test(&NewTest::known())
+        .generated_file("T_Big.pdf", 60 * MIB)
+        .generated_file("S_Big.pdf", 60 * MIB);
+    let (status, body) = complete(Ok(app.submit_add_test(&cookie, form, "publish").await), "post").await;
+    assert_eq!(status, 413, "post: {body}");
+    assert!(
+        refusal(&body).starts_with("That is too much to upload at once: one upload can be at most about 95 MB"),
+        "post: {body}"
     );
 
     assert!(app.stored_keys().await.is_empty(), "nothing stored is left behind");
@@ -195,37 +210,37 @@ async fn too_large(response: reqwest::Result<reqwest::Response>, what: &str) -> 
     refusal(&body)
 }
 
-/// A one-file endpoint's posts over its limit (about 101 MB), each answered
+/// A one-file endpoint's posts over its limit (about 91 MB), each answered
 /// with a 413 that arrives whole, never "cut off". Which is reached first,
-/// the file's 100 MB or the post's limit, is a race (multer reads every
+/// the file's 90 MB or the post's limit, is a race (multer reads every
 /// chunk that is ready at once): both must answer the same.
 async fn one_file_posts_over_the_limit(app: &TestApp, cookie: &str, post: impl Fn() -> OneFile) {
     let base = app.base_url.as_str();
-    // A file over 100 MB: either limit may be reached first.
+    // A file over 90 MB: either limit may be reached first.
     let response = post()
         .file("scan.pdf", b"%PDF-", 120 * MIB)
         .send(app, Some(cookie), base)
         .await;
     assert_eq!(
-        too_large(response, "file over 100 MB").await,
-        "“scan.pdf” can’t be added: files can be at most 100 MB."
+        too_large(response, "file over 90 MB").await,
+        "“scan.pdf” can’t be added: files can be at most 90 MB."
     );
     // The post's limit reached first, for certain: 2 MiB of other fields and
-    // then a file of exactly 100 MiB.
+    // then a file of exactly 90 MB.
     let response = post()
         .padded(2 * MIB)
-        .file("scan.pdf", b"%PDF-", 100 * MIB)
+        .file("scan.pdf", b"%PDF-", 90_000_000)
         .send(app, Some(cookie), base)
         .await;
     assert_eq!(
         too_large(response, "limit reached in the file").await,
-        "“scan.pdf” can’t be added: files can be at most 100 MB."
+        "“scan.pdf” can’t be added: files can be at most 90 MB."
     );
     // The post's limit reached before the file.
-    let response = post().padded(102 * MIB).send(app, Some(cookie), base).await;
+    let response = post().padded(92 * MIB).send(app, Some(cookie), base).await;
     assert_eq!(
         too_large(response, "limit reached before the file").await,
-        "That is too much to upload: files can be at most 100 MB."
+        "That is too much to upload: files can be at most 90 MB."
     );
 }
 
@@ -361,4 +376,85 @@ async fn replace_original_refusals_arrive_whole_however_much_body_is_left() {
         .await
         .unwrap();
     assert_eq!(original.as_ref(), pdf.as_slice());
+}
+
+// ------------------------------------------------------ staging a file
+
+#[tokio::test]
+async fn staging_refusals_arrive_whole_however_much_body_is_left() {
+    let app = TestApp::start().await;
+    let cookie = app.admin().await;
+    let other = app.log_in().await;
+    let csrf = app.csrf_on("/logout", Some(&cookie)).await;
+    let foreign = app.csrf_on("/logout", Some(&other)).await;
+    let base = app.base_url.as_str();
+    let post = || OneFile {
+        path: "/api/admin/uploads/stage",
+        fields: vec![("csrf", csrf.clone())],
+        padding: 0,
+        file: "file",
+        name: "T_Big.pdf",
+        head: b"%PDF-",
+        len: TRAILING,
+    };
+    let error = |body: &str| -> String {
+        let json: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|_| panic!("JSON: {body}"));
+        json["error"].as_str().unwrap_or_default().to_owned()
+    };
+
+    for _ in 0..TIMES {
+        let (status, body) = complete(post().send(&app, None, base).await, "anonymous").await;
+        assert_eq!(status, 401, "anonymous: {body}");
+
+        let response = post().field("csrf", &foreign).send(&app, Some(&cookie), base).await;
+        let (status, body) = complete(response, "foreign token").await;
+        assert_eq!(status, 403, "foreign token: {body}");
+
+        let (status, body) = complete(post().send(&app, Some(&cookie), EVIL).await, "Origin").await;
+        assert_eq!(status, 403, "Origin: {body}");
+
+        let response = post()
+            .file("setup.exe", b"MZ", TRAILING)
+            .send(&app, Some(&cookie), base)
+            .await;
+        let (status, body) = complete(response, "type").await;
+        assert_eq!(status, 415, "type: {body}");
+        assert!(error(&body).starts_with("“setup.exe” can’t be added"), "type: {body}");
+    }
+
+    // Over the limit, in the file or before it.
+    for (padding, len, message) in [
+        (0, 120 * MIB, "“T_Big.pdf” can’t be added: files can be at most 90 MB."),
+        (
+            2 * MIB,
+            90_000_000,
+            "“T_Big.pdf” can’t be added: files can be at most 90 MB.",
+        ),
+        (
+            92 * MIB,
+            TRAILING,
+            "That is too much to upload: files can be at most 90 MB.",
+        ),
+    ] {
+        let response = post()
+            .padded(padding)
+            .file("T_Big.pdf", b"%PDF-", len)
+            .send(&app, Some(&cookie), base)
+            .await;
+        let closing = response
+            .as_ref()
+            .ok()
+            .and_then(|r| r.headers().get("connection").cloned());
+        let (status, body) = complete(response, "over the limit").await;
+        assert_eq!(status, 413, "{padding} + {len}: {body}");
+        assert_eq!(closing.as_ref().and_then(|v| v.to_str().ok()), Some("close"));
+        assert_eq!(error(&body), message, "{padding} + {len}");
+    }
+
+    assert!(app.stored_keys().await.is_empty(), "nothing is staged");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM staged_files")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
 }

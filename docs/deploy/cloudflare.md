@@ -12,6 +12,8 @@ Cloudflare terminates HTTPS. cloudflared dials out, so the server opens no ports
 - **The Host header stays the visitor's hostname.** Never set an HTTP Host Header (`httpHostHeader`) or Origin Server Name override on the tunnel's routes. The app refuses any write whose `Origin` doesn't match `Host`, so a rewritten Host breaks every login and Admin form on the hostname that wasn't rewritten.
 - **`CF-Connecting-IP` is the client.** The login rate limit trusts it, which is safe only because the tunnel is the only way to the app.
 
+Cloudflare also refuses any request over 100 MB on the Free and Pro plans, with its own error page. The app keeps uploads under that: a file can be at most 90 MB, pages with JavaScript upload each file in its own request, and the server refuses a no-JavaScript post of several files over about 95 MB with its own message (README, Adding Tests).
+
 ## 1. The tunnel for `famat.rconde.xyz`
 
 In the Cloudflare dashboard, open Zero Trust → Networks → Tunnels:

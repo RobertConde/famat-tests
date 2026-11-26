@@ -14,10 +14,11 @@
 //!   untrashed Test, or detach it; detaching it from its last untrashed
 //!   Test is refused (a Test in the Trash doesn't count).
 //! - **Replace original** ([`replace_original`]): the new file streams over
-//!   `documents/{id}/original`, its row changes, any PDF (made or supplied)
+//!   `documents/{id}/original` (or, staged with JavaScript, is copied there
+//!   from `server::staging`), its row changes, any PDF (made or supplied)
 //!   is dropped, and the Document is queued for conversion afresh.
 //! - **+ Add files** ([`add_files`]): Add test's upload, rules and saving
-//!   (`server::add_test`), into this Test.
+//!   (`server::add_test`), into this Test, files or `staged` references.
 //!
 //! Unticking Needs review clears its comment too, so a stale reason never
 //! outlives the flag.
@@ -41,7 +42,7 @@ use super::{
     auth,
     change_log::{self, Change, Entity},
     facet_values::FacetValueList,
-    internal_error, pdf,
+    internal_error, pdf, staging,
     storage::{FileRole, PutError},
     upload,
 };
@@ -616,6 +617,14 @@ pub async fn replace_original(
                 break receive_original(state, test, &document, name, field).await;
             }
             ("original", _) => break Err(refuse(StatusCode::BAD_REQUEST, "Choose a file to upload.", test)),
+            // With JavaScript, the file was staged ahead of the form.
+            ("staged", None) => match field.text().await {
+                Ok(staged) if !staged.trim().is_empty() => {
+                    break receive_staged_original(state, test, &document, &staged).await;
+                }
+                Ok(_) => {}
+                Err(e) => break Err(unreadable(e, None, test)),
+            },
             ("test", None) => match field.text().await {
                 Ok(text) => test = parse_id(&text),
                 Err(e) => break Err(unreadable(e, None, test)),
@@ -653,13 +662,8 @@ fn describe_file(name: &str, byte_size: i64, sha256: &[u8]) -> String {
     format!("{name} ({byte_size} bytes, sha256 {})", hex::encode(sha256))
 }
 
-async fn receive_original(
-    state: &AppState,
-    test: Option<i64>,
-    document: &str,
-    name: String,
-    field: Field<'_>,
-) -> Result<String, Refusal> {
+/// The posted Document, if it exists outside the Trash.
+async fn replaced_document(state: &AppState, test: Option<i64>, document: &str) -> Result<i64, Refusal> {
     let Some(id) = parse_id(document) else {
         return Err(refuse(StatusCode::NOT_FOUND, "That Document does not exist.", test));
     };
@@ -675,6 +679,26 @@ async fn receive_original(
             test,
         ));
     }
+    Ok(id)
+}
+
+/// The new Original, as stored over the old one.
+struct NewOriginal {
+    name: String,
+    extension: String,
+    content_type: String,
+    byte_size: i64,
+    sha256: Vec<u8>,
+}
+
+async fn receive_original(
+    state: &AppState,
+    test: Option<i64>,
+    document: &str,
+    name: String,
+    field: Field<'_>,
+) -> Result<String, Refusal> {
+    let id = replaced_document(state, test, document).await?;
     if let Some(message) = upload_rules::refusal(&name, None) {
         return Err(refuse(StatusCode::UNSUPPORTED_MEDIA_TYPE, message, test));
     }
@@ -693,7 +717,61 @@ async fn receive_original(
             PutError::Body(e) => unreadable(e, Some(&name), test),
             PutError::Storage(e) => Refusal::internal(e),
         })?;
+    let new = NewOriginal {
+        name,
+        extension,
+        content_type: content_type.to_owned(),
+        byte_size: stored.byte_size,
+        sha256: stored.sha256.to_vec(),
+    };
+    save_original(state, test, id, new).await
+}
 
+/// **Replace original** with a file staged ahead of the form
+/// (`server::staging`), whose type and size staging checked: copied over
+/// the Original, then saved as if it had been in the post.
+async fn receive_staged_original(
+    state: &AppState,
+    test: Option<i64>,
+    document: &str,
+    staged: &str,
+) -> Result<String, Refusal> {
+    let id = replaced_document(state, test, document).await?;
+    let staged = staging::claim(&state.db, staged)
+        .await
+        .map_err(Refusal::internal)?
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, staging::GONE, test))?;
+    let claimed = [staged.id.clone()];
+    let saved = match staged.copy_to(state, id, FileRole::Original).await {
+        Ok(()) => {
+            let new = NewOriginal {
+                name: staged.name,
+                extension: staged.extension,
+                content_type: staged.content_type,
+                byte_size: staged.byte_size,
+                sha256: staged.sha256,
+            };
+            save_original(state, test, id, new).await
+        }
+        Err(e) => Err(Refusal::internal(e)),
+    };
+    match &saved {
+        Ok(_) => staging::forget(state, &claimed).await,
+        Err(_) => staging::release(state, &claimed).await,
+    }
+    saved
+}
+
+/// Record the new Original, already stored over the old one, and queue its
+/// conversion; any PDF is dropped.
+async fn save_original(state: &AppState, test: Option<i64>, id: i64, new: NewOriginal) -> Result<String, Refusal> {
+    let NewOriginal {
+        name,
+        extension,
+        content_type,
+        byte_size,
+        sha256,
+    } = new;
     let saved = async {
         let mut tx = state.db.begin().await?;
         // The job first, then the Document, in the order workers lock them.
@@ -723,10 +801,10 @@ async fn receive_original(
                  byte_size = excluded.byte_size, sha256 = excluded.sha256, created_at = now()",
         )
         .bind(id)
-        .bind(content_type)
+        .bind(&content_type)
         .bind(&extension)
-        .bind(stored.byte_size)
-        .bind(stored.sha256.to_vec())
+        .bind(byte_size)
+        .bind(&sha256)
         .execute(&mut *tx)
         .await?;
         sqlx::query("UPDATE documents SET pdf_status = 'preparing', updated_at = now() WHERE id = $1")
@@ -743,7 +821,7 @@ async fn receive_original(
                     before_original.map(|(extension, size, sha256)| {
                         describe_file(&format!("original.{extension}"), size, &sha256)
                     }),
-                    describe_file(&name, stored.byte_size, &stored.sha256),
+                    describe_file(&name, byte_size, &sha256),
                 ),
                 Change::new(
                     "pdf",
@@ -827,6 +905,7 @@ pub async fn add_files(
     .await;
     match saved {
         Ok(Some(test)) => {
+            upload.saved(state).await;
             state.pdf.wake();
             Ok(auth::see_other(&edit_path(test), None))
         }

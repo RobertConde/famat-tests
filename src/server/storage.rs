@@ -112,6 +112,12 @@ impl Storage {
         format!("{}documents/{document_id}/{}", self.key_prefix, role.as_str())
     }
 
+    /// The object key of a file staged for an upload (`server::staging`),
+    /// until it is saved as a Document's file.
+    pub fn staged_key(&self, staged_id: &str) -> String {
+        format!("{}staged/{staged_id}", self.key_prefix)
+    }
+
     /// Start reading an object. `Ok(None)` when it does not exist, so callers
     /// can answer a real 404 before committing to a response.
     pub async fn get(&self, key: &str) -> anyhow::Result<Option<Object>> {

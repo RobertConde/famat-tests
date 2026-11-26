@@ -3,7 +3,9 @@
 //! document order (the CSRF token first, the dropdowns and their **+ New
 //! value** fields, the files, then the pressed button). With JavaScript the
 //! page adds a `kind_{i}` and a `label_{i}` field per file; tests send those
-//! with [`AddTestForm::field`].
+//! with [`AddTestForm::field`]. With JavaScript the page also uploads each
+//! file on its own first and posts a `staged` field per file instead of the
+//! files ([`AddTestForm::staged`], `support::staging`).
 
 use futures_util::stream;
 use reqwest::multipart::{Form, Part};
@@ -30,6 +32,8 @@ enum Body {
     Bytes(Vec<u8>),
     /// That many bytes, generated as they are sent rather than held.
     Generated(u64),
+    /// A file staged ahead of the form, by ID.
+    Staged,
 }
 
 impl AddTestForm {
@@ -135,6 +139,13 @@ impl AddTestForm {
         self
     }
 
+    /// Post the reference of a file staged ahead of the form, as the
+    /// hydrated page does in place of the file.
+    pub fn staged(mut self, id: &str) -> Self {
+        self.files.push((id.to_owned(), Body::Staged));
+        self
+    }
+
     /// Send a field after the files, as the hydrated page's per-file kind
     /// and label fields are.
     pub fn field(mut self, name: &str, value: &str) -> Self {
@@ -162,6 +173,10 @@ impl AddTestForm {
             let part = match body {
                 Body::Bytes(bytes) => Part::bytes(bytes),
                 Body::Generated(len) => Part::stream_with_length(generated(&[], len), len),
+                Body::Staged => {
+                    form = form.text("staged", name);
+                    continue;
+                }
             };
             form = form.part(
                 "files",

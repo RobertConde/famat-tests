@@ -14,7 +14,10 @@
 //!
 //! Every action is its own native form post (CSRF-checked, Admin-only) that
 //! answers 303 back to this page, so the page works without JavaScript.
-//! The logic is server-only, in `crate::server::test_edit`.
+//! With JavaScript, **Replace original** and **+ Add files** upload each
+//! file on its own as soon as it is chosen, and post references to them
+//! (`crate::app::staging`). The logic is server-only, in
+//! `crate::server::test_edit`.
 
 #[allow(unused_imports)] // only the server-side extractors use them
 use dioxus::fullstack::{Form, HeaderMap, Loading, MultipartFormData, response::Response};
@@ -26,8 +29,9 @@ use super::{
     admin::AdminMenu,
     bulk_edit::MergeInto,
     pdf::{self, PdfActions},
+    staging::{Staged, Staging, StagingStatus, refuse_file, stage_files},
     trash::{RemoveDocument, RemoveTest},
-    upload_rules::ACCEPT,
+    upload_rules::{self, ACCEPT},
 };
 
 /// Everything the Test edit page shows.
@@ -180,23 +184,26 @@ pub async fn document_tests(form: Form<DocumentTestsForm>) -> Result<Response, S
 
 /// `POST /api/admin/documents/replace-original`: **Replace original**, a
 /// native multipart post of `csrf` (first), `test`, `document` and the
-/// `original` file. The file replaces the Original and its PDF is made
-/// afresh by the queue. 415/413 for a file of the wrong type or over 100 MB.
+/// `original` file (or, with JavaScript, a `staged` reference in its place).
+/// The file replaces the Original and its PDF is made afresh by the queue.
+/// 415/413 for a file of the wrong type or over 90 MB, 409 for a staged
+/// file already saved or swept.
 #[post("/api/admin/documents/replace-original",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(crate::server::upload::UploadLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_ONE_FILE_BYTES))]
 pub async fn replace_original(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::test_edit::replace_original(&state, &headers, form).await
 }
 
 /// `POST /api/admin/tests/add-files`: **+ Add files**, a native multipart
-/// post like Add test's: `csrf` (first), `test`, the `files`, per-file
-/// `kind_{i}` / `label_{i}`, and `save` (`hidden` or `publish`).
+/// post like Add test's: `csrf` (first), `test`, the `files` (or `staged`
+/// references), per-file `kind_{i}` / `label_{i}`, and `save` (`hidden` or
+/// `publish`). At most about 95 MB in all.
 #[post("/api/admin/tests/add-files",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_COMBINED_BYTES))]
 pub async fn add_files(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::test_edit::add_files(&state, &headers, form).await
 }
@@ -457,21 +464,7 @@ fn DocumentEditor(document: EditedDocument, test: i64, csrf: String, kinds: Vec<
                 PdfActions { document: id, csrf: csrf.clone(), return_to: return_to.clone() }
             }
             div { class: "row-actions",
-                form {
-                    class: "replace-original",
-                    method: "post",
-                    action: "/api/admin/documents/replace-original",
-                    enctype: "multipart/form-data",
-                    // First, so the server checks it before reading the file.
-                    input { r#type: "hidden", name: "csrf", value: "{csrf}" }
-                    input { r#type: "hidden", name: "test", value: "{test}" }
-                    input { r#type: "hidden", name: "document", value: "{id}" }
-                    label {
-                        span { class: "sr", "New Original for D{id}" }
-                        input { r#type: "file", name: "original", accept: ACCEPT, required: true }
-                    }
-                    button { r#type: "submit", "Replace original" }
-                }
+                ReplaceOriginal { document: id, test, csrf: csrf.clone() }
             }
             div { class: "row-actions",
                 form { class: "also-on", method: "post", action: "/api/admin/documents/tests",
@@ -513,9 +506,63 @@ fn DocumentEditor(document: EditedDocument, test: i64, csrf: String, kinds: Vec<
     }
 }
 
+/// **Replace original**: one file, posted natively; once the page has
+/// hydrated, uploaded on its own as soon as it is chosen
+/// (`crate::app::staging`), and the form posts its `staged` reference.
+#[component]
+fn ReplaceOriginal(document: i64, test: i64, csrf: String) -> Element {
+    let input_id = format!("original-{document}");
+    let chosen_in = input_id.clone();
+    let staged = use_signal(Staged::default);
+    let state = staged.read().clone();
+    let file = state.files.first().cloned();
+    rsx! {
+        form {
+            class: "replace-original",
+            method: "post",
+            action: "/api/admin/documents/replace-original",
+            enctype: "multipart/form-data",
+            // First, so the server checks it before reading the file.
+            input { r#type: "hidden", name: "csrf", value: "{csrf}" }
+            input { r#type: "hidden", name: "test", value: "{test}" }
+            input { r#type: "hidden", name: "document", value: "{document}" }
+            if let Some(Staging::Staged(staged_id)) = &file {
+                input { r#type: "hidden", name: "staged", value: "{staged_id}" }
+            }
+            label {
+                span { class: "sr", "New Original for D{document}" }
+                input {
+                    id: "{input_id}",
+                    r#type: "file",
+                    name: if state.ready() { "" } else { "original" },
+                    accept: ACCEPT,
+                    required: true,
+                    onchange: move |event: FormEvent| {
+                        let names: Vec<String> = event.files().iter().map(|f| f.name()).collect();
+                        let refused = event
+                            .files()
+                            .first()
+                            .and_then(|f| upload_rules::refusal(&f.name(), Some(f.size())));
+                        match refused {
+                            Some(message) => refuse_file(staged, message),
+                            None => stage_files(&chosen_in, names, Vec::new(), staged),
+                        }
+                    },
+                }
+            }
+            button { r#type: "submit", disabled: state.blocked(), "Replace original" }
+            if let Some(file) = file {
+                StagingStatus { state: file }
+            }
+        }
+    }
+}
+
 /// **+ Add files**: Add test's drop zone, adding Documents to this Test.
 #[component]
 fn AddFiles(test: i64, csrf: String, kinds: Vec<String>) -> Element {
+    let staged = use_signal(Staged::default);
+    let blocked = staged.read().blocked();
     rsx! {
         form {
             id: "add-files",
@@ -528,11 +575,11 @@ fn AddFiles(test: i64, csrf: String, kinds: Vec<String>) -> Element {
             input { r#type: "hidden", name: "test", value: "{test}" }
             fieldset {
                 legend { "+ Add files" }
-                FilePicker { kinds }
+                FilePicker { kinds, staged }
             }
             div { class: "actions",
-                button { r#type: "submit", name: "save", value: "hidden", "Add hidden" }
-                button { r#type: "submit", name: "save", value: "publish", "Add published" }
+                button { r#type: "submit", name: "save", value: "hidden", disabled: blocked, "Add hidden" }
+                button { r#type: "submit", name: "save", value: "publish", disabled: blocked, "Add published" }
             }
         }
     }
