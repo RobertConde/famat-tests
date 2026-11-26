@@ -876,3 +876,138 @@ async fn an_upload_waiting_on_a_deleted_test_can_still_be_saved_as_a_new_test() 
     assert_redirect(response, "/admin/tests/new?added=").await;
     assert_eq!(app.get_page("/").await.text("#count"), "1 test");
 }
+
+// ------------------------------------------------ Merge into… (#27) and search
+
+/// The IDs of the Test rows a search page shows.
+fn result_rows(page: &Page) -> Vec<String> {
+    page.select("#results tbody tr")
+        .into_iter()
+        .filter_map(|row| row.value().attr("id").map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_test_emptied_by_merge_into_is_in_the_trash_and_restores_hidden_and_empty() {
+    let app = TestApp::start().await;
+    let from = app.insert_test(&NewTest::known()).await;
+    let into = app.insert_test(&other_test()).await;
+    let (pdf, errata) = (sample_pdf(1_000), sample_pdf(700));
+    let moved = app.insert_document(&[from], NewDocument::pdf("Test", &pdf)).await;
+    let trashed_document = app.insert_document(&[from], NewDocument::pdf("Errata", &errata)).await;
+    let cookie = app.admin().await;
+    remove_document(&app, &cookie, from, trashed_document).await;
+
+    let page = edit_page(&app, &cookie, from).await;
+    let form = page.post_form("form#merge-test").fill("into", &format!("T{into}"));
+    assert_redirect(submit(&app, &cookie, form).await, &edit_path(into)).await;
+
+    // The merged Test is in the Trash, says where its Documents went, and
+    // never shows in a search, even an Admin's.
+    let trash = trash_page(&app, &cookie).await;
+    assert_eq!(
+        trash_items(&trash),
+        [format!("T{from}"), format!("D{trashed_document}")]
+    );
+    let row = trash.one(&format!("tr#T{from}"));
+    assert!(text(row).contains("Hidden"), "{}", text(row));
+    assert_eq!(
+        text_in(row, ".merged"),
+        format!("Merged into T{into}. Restoring brings it back Hidden and empty: its Documents stay on T{into}.")
+    );
+    assert!(text_in(row, ".details").contains("No Documents"));
+    // Its Trashed Document moved too, so it can be restored onto the survivor.
+    let document_row = trash.one(&format!("tr#D{trashed_document}"));
+    assert!(text_in(document_row, ".details").contains(&format!("T{into}")));
+    for search in ["/", "/?needs_review=on"] {
+        let rows = result_rows(&app.get_page_as(search, Some(&cookie)).await);
+        assert!(!rows.contains(&format!("T{from}")), "{search}: {rows:?}");
+    }
+
+    // The change log page shows the merge.
+    let log = app
+        .get_page_as(&format!("/admin/change-log?id=T{from}"), Some(&cookie))
+        .await;
+    let merged: Vec<(String, String)> = log
+        .select("tr.entry")
+        .into_iter()
+        .map(|row| (text_in(row, "td.field"), text_in(row, "td.change")))
+        .collect();
+    assert!(
+        merged.contains(&("merged into".to_owned(), format!("— → T{into}"))),
+        "{merged:?}"
+    );
+    assert!(merged.contains(&("published".to_owned(), "true → false".to_owned())));
+
+    // Restore: Hidden and empty, as the merge left it. The Documents stay.
+    let survivor = public_view(&app, &[into], &[moved]).await;
+    assert_redirect(
+        press_in_trash(&app, &cookie, &format!("T{from}"), "restore").await,
+        "/admin/trash",
+    )
+    .await;
+    assert_eq!(admin_view(&app, &cookie, from).await[1], "Hidden");
+    assert!(
+        edit_page(&app, &cookie, from)
+            .await
+            .select("section.document")
+            .is_empty()
+    );
+    assert!(result_rows(&app.get_page_as("/", Some(&cookie)).await).contains(&format!("T{from}")));
+    assert!(!result_rows(&app.get_page("/").await).contains(&format!("T{from}")));
+    assert_eq!(public_view(&app, &[into], &[moved]).await, survivor);
+
+    // Removed again and deleted for good, it takes nothing with it.
+    remove_test(&app, &cookie, from).await;
+    assert_redirect(
+        press_in_trash(&app, &cookie, &format!("T{from}"), "delete").await,
+        "/admin/trash",
+    )
+    .await;
+    assert_eq!(test_rows(&app, from).await, 0);
+    assert_eq!(public_view(&app, &[into], &[moved]).await, survivor);
+    assert!(app.stored_keys().await.contains(&format!("documents/{moved}/original")));
+    assert_redirect(
+        press_in_trash(&app, &cookie, &format!("D{trashed_document}"), "restore").await,
+        "/admin/trash",
+    )
+    .await;
+    assert_eq!(
+        app.get(&format!("/tests/{into}/documents/{trashed_document}/pdf"))
+            .await
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn trashed_tests_never_show_in_an_admins_search_hidden_or_flagged() {
+    let app = TestApp::start().await;
+    let hidden = app
+        .insert_test(&NewTest {
+            published: false,
+            ..NewTest::known()
+        })
+        .await;
+    let live = app.insert_test(&other_test()).await;
+    sqlx::query("UPDATE tests SET needs_review = true, needs_review_comment = 'check' WHERE id = ANY($1)")
+        .bind([hidden, live])
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let cookie = app.admin().await;
+    assert_eq!(
+        result_rows(&app.get_page_as("/?needs_review=on", Some(&cookie)).await).len(),
+        2
+    );
+
+    remove_test(&app, &cookie, hidden).await;
+    remove_test(&app, &cookie, live).await;
+
+    for search in ["/", "/?needs_review=on"] {
+        let page = app.get_page_as(search, Some(&cookie)).await;
+        assert!(result_rows(&page).is_empty(), "{search}: {:?}", result_rows(&page));
+    }
+    let selected = app.get_page_as(&format!("/?sel={hidden},{live}"), Some(&cookie)).await;
+    assert!(selected.select("input.pick[checked]").is_empty());
+}

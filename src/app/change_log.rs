@@ -88,7 +88,7 @@ const CSS: &str = r#"
 .change-log td.change { overflow-wrap: anywhere; white-space: pre-line }
 .change-log .before { color: #8a1c1c }
 .change-log .after { color: #1d5e2b }
-.change-log .arrow { color: var(--muted); padding-inline: 6px }
+.change-log .arrow { color: var(--muted); white-space: pre }
 "#;
 
 /// `/admin/change-log?entity=…&id=…&page=…`.
@@ -163,7 +163,7 @@ pub fn ChangeLog(entity: ReadSignal<String>, id: ReadSignal<String>, page: ReadS
                                         td { class: "field", "{entry.field}" }
                                         td { class: "change",
                                             span { class: "before", {shown(&entry.before)} }
-                                            span { class: "arrow", "→" }
+                                            span { class: "arrow", " → " }
                                             span { class: "after", {shown(&entry.after)} }
                                         }
                                     }

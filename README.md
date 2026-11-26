@@ -129,6 +129,7 @@ Documents shared between Tests:
 - Deleting a Test permanently also deletes the Documents that are on no other Test, Trashed or not. One also on another Test (even a Trashed one) is only taken off it.
 - Deleting a Document permanently takes it off every Test, Trashed or not.
 - A Document whose Tests are all in the Trash can't be restored on its own (it would come back out of sight). Restore one of its Tests first.
+- A Test emptied by **Merge into…** is in the Trash, marked with the Test it was merged into. Restoring it brings it back as the merge left it: Hidden, with no Documents. Deleting it permanently deletes only the Test.
 - A Test in the Trash doesn't count for **Also on Tests…**: the edit page doesn't list it, and a Document can't be detached from its last Test outside the Trash.
 - Deleting a Document locks its PDF job first, so a conversion storing its PDF finishes before the objects go, and one still running throws its result away. The objects are deleted before the transaction commits, so if Garage fails nothing is deleted and the item stays in the Trash.
 - An upload held by Add test's duplicate warning has no rows to delete. If the Test it matched is deleted, **Add these files to that Test instead** is refused, and it can still be saved as a new Test or discarded.

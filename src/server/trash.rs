@@ -22,6 +22,10 @@
 //!   not.
 //! - Restoring a Document whose Tests are all in the Trash is refused (409):
 //!   it would come back out of sight. Restore one of its Tests first.
+//! - A Test that **Merge into…** emptied and trashed (`server::bulk_edit`)
+//!   is listed as merged. Restoring it brings it back as the merge left it:
+//!   Hidden, with no Documents (they stay on the Test it was merged into).
+//!   Deleting it permanently deletes only the Test.
 //!
 //! Locks are taken in the order the rest of the app uses, so two writers
 //! never deadlock: PDF jobs, then Documents (as the PDF workers do), then
@@ -244,8 +248,7 @@ pub async fn restore(state: &AppState, headers: &HeaderMap, form: TrashItemForm)
                 "SELECT t.id, t.trashed_at IS NOT NULL
                  FROM test_documents td JOIN tests t ON t.id = td.test_id
                  WHERE td.document_id = $1
-                 ORDER BY t.id
-                 FOR SHARE OF t",
+                 ORDER BY t.id",
             )
             .bind(id)
             .fetch_all(&mut **tx)
@@ -545,6 +548,8 @@ struct TestRecord {
     published: bool,
     trashed: bool,
     removed: Option<String>,
+    /// `T5` when Merge into… emptied it into T5 and trashed it.
+    merged_into: Option<String>,
     /// In microseconds, for sorting.
     trashed_at: Option<i64>,
 }
@@ -569,6 +574,12 @@ async fn tests(db: &PgPool, ids: Option<&[i64]>) -> Result<Vec<TestRecord>, sqlx
                 dl.name AS division_level, tt.name AS test_type, h.name AS host,
                 t.published, t.trashed_at IS NOT NULL AS trashed,
                 {} AS removed,
+                -- Merge into… logs this in the transaction that trashes it,
+                -- so the entry shares its time.
+                (SELECT c.after FROM change_log c
+                 WHERE c.entity = 'test' AND c.entity_id = t.id AND c.field = 'merged_into'
+                   AND c.changed_at = t.trashed_at
+                 ORDER BY c.id DESC LIMIT 1) AS merged_into,
                 (extract(epoch FROM t.trashed_at) * 1000000)::bigint AS trashed_at
          FROM tests t
          LEFT JOIN facet_values m  ON m.id  = t.month_id
@@ -641,6 +652,7 @@ async fn items(db: &PgPool) -> Result<Vec<TrashedItem>, sqlx::Error> {
                 id: test.id,
                 removed: test.removed.clone().unwrap_or_default(),
                 description: test.description(),
+                merged_into: test.merged_into.clone(),
                 published: test.published,
                 documents,
             }),

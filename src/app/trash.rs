@@ -44,6 +44,8 @@ pub struct TrashedTest {
     pub published: bool,
     /// Its Documents, by ID.
     pub documents: Vec<DocumentRef>,
+    /// `T5` when **Merge into…** emptied it into T5 and trashed it.
+    pub merged_into: Option<String>,
 }
 
 /// A Document of a Trashed Test.
@@ -169,6 +171,7 @@ pub(super) const CSS: &str = r#"
 #trash button.restore { border-color: var(--accent); color: var(--accent); font-weight: 600 }
 #trash button.delete, form.remove button { color: #b00020 }
 #trash button:disabled { color: var(--faint); cursor: default }
+#trash .merged { margin: 0 0 4px }
 #trash .blocked { font-size: .8rem; color: var(--muted); margin: 4px 0 0 }
 "#;
 
@@ -271,6 +274,13 @@ fn TestRow(test: TrashedTest, csrf: String) -> Element {
                 div { class: "description", "{test.description}" }
             }
             td { class: "details",
+                if let Some(into) = &test.merged_into {
+                    p { class: "merged",
+                        "Merged into "
+                        span { class: "mono", "{into}" }
+                        ". Restoring brings it back Hidden and empty: its Documents stay on {into}."
+                    }
+                }
                 if test.documents.is_empty() {
                     "No Documents"
                 } else {
