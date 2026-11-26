@@ -741,3 +741,51 @@ async fn add_files_adds_documents_by_add_tests_rules() {
     assert_eq!(app.stored_keys().await, keys);
     assert_eq!(edit_page(&app, &cookie, test).await.select("section.document").len(), 3);
 }
+
+#[tokio::test]
+async fn each_document_on_the_edit_page_opens_in_a_new_tab_even_when_hidden() {
+    let app = TestApp::start().await;
+    let cookie = app.admin().await;
+    let pdf = sample_pdf(1_000);
+    let test = app
+        .insert_test(&NewTest {
+            published: false,
+            ..NewTest::known()
+        })
+        .await;
+    let document = app
+        .insert_document(
+            &[test],
+            NewDocument {
+                published: false,
+                ..NewDocument::pdf("Test", &pdf)
+            },
+        )
+        .await;
+
+    let page = edit_page(&app, &cookie, test).await;
+    let view = page.one(&format!("#D{document} a.view-pdf"));
+    let href = format!("/tests/{test}/documents/{document}/pdf");
+    assert_eq!(view.value().attr("href"), Some(href.as_str()));
+    assert_eq!(view.value().attr("target"), Some("_blank"));
+    let original = page.one(&format!("#D{document} a.download-original"));
+    let original_href = format!("/tests/{test}/documents/{document}/original");
+    assert_eq!(original.value().attr("href"), Some(original_href.as_str()));
+
+    // An Admin opens the Hidden Document; the public still gets a 404.
+    let response = app.get_as(&href, Some(&cookie)).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("private, no-store"),
+        "a Hidden Document is never cached"
+    );
+    assert_eq!(response.bytes().await.unwrap().as_ref(), pdf.as_slice());
+    assert_eq!(app.get_as(&original_href, Some(&cookie)).await.status(), 200);
+    assert_eq!(app.get(&href).await.status(), 404);
+    assert_eq!(app.get(&original_href).await.status(), 404);
+
+    // A trashed Document stays a 404, even for an Admin.
+    app.trash_document(document).await;
+    assert_eq!(app.get_as(&href, Some(&cookie)).await.status(), 404);
+}

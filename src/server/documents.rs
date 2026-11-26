@@ -10,19 +10,21 @@
 //!
 //! Only Published, untrashed Documents of Published, untrashed Tests are
 //! served; everything else, including an object missing from Garage, is a 404.
+//! An Admin also gets Hidden ones (still not trashed), from the links on the
+//! Test edit page, and those are never cached.
 
 use axum::{
     Extension,
     body::Body,
     extract::Path,
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
 };
-use sqlx::{FromRow, PgPool};
+use sqlx::FromRow;
 use tokio_util::io::ReaderStream;
 
 use super::{
-    AppState,
+    AppState, auth,
     download_name::{NameParts, TestParts, content_disposition, file_name},
     storage::FileRole,
 };
@@ -33,8 +35,12 @@ use super::{
 /// The PDF is the generated one once it is ready, otherwise the Original when
 /// it is itself a PDF. When there is no PDF (yet) but there is an Original,
 /// a page says so and links to the Original.
-pub async fn pdf(Extension(state): Extension<AppState>, Path((test_id, id)): Path<(i64, i64)>) -> Response {
-    let document = match Download::find(&state.db, test_id, id).await {
+pub async fn pdf(
+    Extension(state): Extension<AppState>,
+    Path((test_id, id)): Path<(i64, i64)>,
+    headers: HeaderMap,
+) -> Response {
+    let document = match Download::find(&state, &headers, test_id, id).await {
         Ok(Some(document)) => document,
         Ok(None) => return not_found(),
         Err(e) => return server_error(e),
@@ -49,13 +55,17 @@ pub async fn pdf(Extension(state): Extension<AppState>, Path((test_id, id)): Pat
         return not_found();
     };
     let disposition = content_disposition("inline", &document.file_name("pdf"));
-    stream(&state, id, role, "application/pdf", &disposition).await
+    stream(&state, &document, role, "application/pdf", &disposition).await
 }
 
 /// `GET /tests/{test_id}/documents/{id}/original`: the Original exactly as
 /// uploaded, as a download named with its own extension.
-pub async fn original(Extension(state): Extension<AppState>, Path((test_id, id)): Path<(i64, i64)>) -> Response {
-    let document = match Download::find(&state.db, test_id, id).await {
+pub async fn original(
+    Extension(state): Extension<AppState>,
+    Path((test_id, id)): Path<(i64, i64)>,
+    headers: HeaderMap,
+) -> Response {
+    let document = match Download::find(&state, &headers, test_id, id).await {
         Ok(Some(document)) => document,
         Ok(None) => return not_found(),
         Err(e) => return server_error(e),
@@ -64,7 +74,14 @@ pub async fn original(Extension(state): Extension<AppState>, Path((test_id, id))
         return not_found();
     };
     let disposition = content_disposition("attachment", &document.file_name(&original.extension));
-    stream(&state, id, FileRole::Original, &original.content_type, &disposition).await
+    stream(
+        &state,
+        &document,
+        FileRole::Original,
+        &original.content_type,
+        &disposition,
+    )
+    .await
 }
 
 /// `GET /documents/{id}/pdf`: redirect to the PDF under the Document's first
@@ -115,6 +132,8 @@ struct Download {
     kind: String,
     label: Option<String>,
     pdf_status: String,
+    /// The Document and its Test are both Published.
+    public: bool,
     #[sqlx(skip)]
     original: Option<File>,
     #[sqlx(skip)]
@@ -178,17 +197,18 @@ impl File {
 }
 
 impl Download {
-    /// `None` unless the Document belongs to the Test and both are Published
-    /// and untrashed.
-    async fn find(db: &PgPool, test_id: i64, id: i64) -> Result<Option<Self>, sqlx::Error> {
+    /// `None` unless the Document belongs to the Test, both are untrashed,
+    /// and both are Published or the request is an Admin's.
+    async fn find(state: &AppState, headers: &HeaderMap, test_id: i64, id: i64) -> Result<Option<Self>, sqlx::Error> {
+        let db = &state.db;
         let download: Option<Self> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT d.id, k.name AS kind, d.label, d.pdf_status::text, {TEST_FACETS_FROM}
+            "SELECT d.id, k.name AS kind, d.label, d.pdf_status::text,
+                    (t.published AND d.published) AS public, {TEST_FACETS_FROM}
              JOIN test_documents td ON td.test_id = t.id
              JOIN documents d       ON d.id = td.document_id
              JOIN document_kinds k  ON k.id = d.kind_id
              WHERE t.id = $1 AND d.id = $2
-               AND t.published AND t.trashed_at IS NULL
-               AND d.published AND d.trashed_at IS NULL"
+               AND t.trashed_at IS NULL AND d.trashed_at IS NULL"
         )))
         .bind(test_id)
         .bind(id)
@@ -197,6 +217,9 @@ impl Download {
         let Some(mut download) = download else {
             return Ok(None);
         };
+        if !download.public && auth::current_session(db, headers).await?.is_none() {
+            return Ok(None);
+        }
         let files: Vec<File> =
             sqlx::query_as("SELECT role::text, content_type, extension FROM document_files WHERE document_id = $1")
                 .bind(id)
@@ -230,7 +253,14 @@ impl Download {
 
 /// Stream one of a Document's objects. The object is opened before
 /// answering, so a missing one is a real 404.
-async fn stream(state: &AppState, id: i64, role: FileRole, content_type: &str, disposition: &str) -> Response {
+async fn stream(
+    state: &AppState,
+    document: &Download,
+    role: FileRole,
+    content_type: &str,
+    disposition: &str,
+) -> Response {
+    let id = document.id;
     let key = state.storage.document_key(id, role);
     let object = match state.storage.get(&key).await {
         Ok(Some(object)) => object,
@@ -247,6 +277,9 @@ async fn stream(state: &AppState, id: i64, role: FileRole, content_type: &str, d
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_DISPOSITION, disposition)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    if !document.public {
+        response = response.header(header::CACHE_CONTROL, "private, no-store");
+    }
     if let Some(len) = object.content_length {
         response = response.header(header::CONTENT_LENGTH, HeaderValue::from(len));
     }
