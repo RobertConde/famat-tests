@@ -14,7 +14,7 @@ The spike (branch `spike/dioxus`, issue #14) confirmed all four things v1 needs.
 - Any server function that can fail with a 4xx returns `Result<T, ServerFnError>`. The default `Result<T>` always answers HTTP 500.
 - Every server function is a public endpoint, so it authorizes itself. Page middleware doesn't cover `/api/*`.
 - Admin writes are native `<form method="post">` posts with a hidden CSRF field. They return an explicit 303 (a raw `Response` with `Set-Cookie` where needed), because Dioxus rewrites 2xx form posts to `302 → Referer`.
-- Uploads need `DefaultBodyLimit::max(..)`, since axum caps bodies at 2 MB by default. (Since #47 they get it from `server::upload::UploadLimit::max(..)`, which also reads a refused upload's body to its end, so the refusal reaches the client.)
+- Uploads need `DefaultBodyLimit::max(..)`, since axum caps bodies at 2 MB by default. (Since #47 they get it from `server::upload::UploadLimit::max(..)`, which also reads a refused upload's body to its end, so the refusal reaches the client.) Since #48 the limits keep every request under Cloudflare's 100 MB: a file is at most 90 MB, a one-file post at most that plus 1 MiB, and a post of several files (Add test or **+ Add files** without JavaScript) at most 95 MB. With JavaScript those pages upload each file in its own request to a staging endpoint and post only references (`server::staging`).
 - The build uses the spike's `[profile.wasm-release]` (opt-level z, fat LTO, 1 CGU) and `[web] pre_compress = true`, and builds into a clean out dir.
 - Downloads and zips stay plain axum routes, using the `tokio::io::duplex` + `async_zip` streaming pattern.
 - Hydration uses inline scripts, so a future strict CSP needs nonces or hashes.

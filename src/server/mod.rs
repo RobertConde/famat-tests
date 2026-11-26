@@ -16,6 +16,7 @@ pub mod import;
 pub mod legacy;
 pub mod pdf;
 pub mod search;
+pub mod staging;
 pub mod storage;
 pub mod test_edit;
 pub mod trash;

@@ -536,7 +536,7 @@ async fn other_file_types_are_refused_with_a_message_naming_the_allowed_types() 
 }
 
 #[tokio::test]
-async fn a_file_over_100_mb_is_refused_and_one_of_exactly_100_mb_is_not() {
+async fn a_file_over_90_mb_is_refused_and_one_of_exactly_90_mb_is_not() {
     let app = TestApp::start().await;
     let cookie = app.admin().await;
 
@@ -545,14 +545,14 @@ async fn a_file_over_100_mb_is_refused_and_one_of_exactly_100_mb_is_not() {
         .await
         .test(&NewTest::known())
         .file("S_Calculus.pdf", &sample_pdf(2000))
-        .generated_file("T_Calculus.pdf", 100 * MIB + 1);
+        .generated_file("T_Calculus.pdf", 90_000_000 + 1);
     let response = app.submit_add_test(&cookie, form, "publish").await;
 
     assert_eq!(response.status(), 413);
     let page = Page::parse(&response.text().await.unwrap());
     assert_eq!(
         page.text("#refusal"),
-        "“T_Calculus.pdf” can’t be added: files can be at most 100 MB."
+        "“T_Calculus.pdf” can’t be added: files can be at most 90 MB."
     );
     assert!(app.stored_keys().await.is_empty(), "nothing stored is left behind");
     assert!(app.change_log().await.is_empty());
@@ -561,11 +561,11 @@ async fn a_file_over_100_mb_is_refused_and_one_of_exactly_100_mb_is_not() {
         .add_test_form(&cookie)
         .await
         .test(&NewTest::known())
-        .generated_file("T_Calculus.pdf", 100 * MIB);
+        .generated_file("T_Calculus.pdf", 90_000_000);
     let test = app.add_test(&cookie, form, "publish").await;
     let saved = app.saved_documents(&cookie, test).await;
     let response = app.get(&format!("/tests/{test}/documents/{}/pdf", saved[0].id)).await;
-    assert_eq!(response.headers()["content-length"], (100 * MIB).to_string().as_str());
+    assert_eq!(response.headers()["content-length"], "90000000");
 }
 
 // ---------------------------------------------------------------- saving

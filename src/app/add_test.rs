@@ -3,9 +3,15 @@
 //!
 //! The form is one native multipart post, so it works without JavaScript:
 //! the drop zone is the file input itself, and each file's Document kind is
-//! guessed from its name on the server. Once the page has hydrated, choosing
-//! files lists them with their guessed kinds (changeable) and a label field
-//! each, posted as `kind_{i}` and `label_{i}` for the i-th file.
+//! guessed from its name on the server. Without JavaScript that one post
+//! holds every file, so it can be at most about 95 MB, as the page says.
+//!
+//! Once the page has hydrated, choosing files lists them with their guessed
+//! kinds (changeable) and a label field each, posted as `kind_{i}` and
+//! `label_{i}` for the i-th file, and uploads each file in its own request
+//! (`crate::app::staging`), with its progress. The form then posts the
+//! staged files' references in place of the files, and its buttons wait
+//! until every file is in.
 //!
 //! When the Facet values match an existing Test, the files are held and the
 //! page (`?pending=`) offers **Add these files to that Test instead**. After
@@ -19,6 +25,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::admin::AdminMenu;
+use super::staging::{Staged, StagingStatus, stage_files};
 use super::upload_rules::{ACCEPT, ALLOWED_TYPES, Pairer, Placement, guess_kind, refusal};
 
 /// Everything the Add test page shows.
@@ -125,11 +132,14 @@ pub async fn add_test_page(added: String, pending: String) -> Result<AddTestPage
 /// `POST /api/admin/tests`: the Add test form, a native multipart post. The
 /// `csrf` field must come first, as the form puts it. Answers 303 to the
 /// saved Test's summary or to the duplicate warning, 401/403 without a
-/// session or token, 415/413 for a file of the wrong type or over 100 MB.
+/// session or token, 415/413 for a file of the wrong type or over 90 MB,
+/// 413 for a post over about 95 MB, 409 for a `staged` reference already
+/// saved or swept. With JavaScript the page posts `staged` references in
+/// place of the `files`.
 #[post("/api/admin/tests",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_UPLOAD_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_COMBINED_BYTES))]
 pub async fn add_test(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::add_test::upload(&state, &headers, form).await
 }
@@ -163,6 +173,10 @@ pub const CSS: &str = r#"
 .add-test .actions button, .finish button { border: 1px solid var(--accent); border-radius: 5px; padding: 5px 16px;
   font-weight: 600; cursor: pointer; background: var(--paper); color: var(--accent) }
 .add-test .actions button[value=publish], .finish button.primary { background: var(--accent); color: var(--paper) }
+.add-test .actions button:disabled { opacity: .45; cursor: default }
+.staging { white-space: nowrap; font-size: .85rem }
+.staging progress { width: 6rem; vertical-align: middle }
+.staging.refusal { white-space: normal }
 .summary, .warning { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 16px; margin: 0 0 16px }
 .warning { border-color: #d9a400; background: #fffbea }
 .summary ul, .warning ul { margin: 6px 0; padding-left: 20px }
@@ -207,6 +221,8 @@ pub fn AddTest(added: ReadSignal<String>, pending: ReadSignal<String>, notice: R
 
 #[component]
 fn AddTestForm(csrf: String, facets: Vec<FacetOptions>, kinds: Vec<String>) -> Element {
+    let staged = use_signal(Staged::default);
+    let blocked = staged.read().blocked();
     rsx! {
         form {
             id: "add-test",
@@ -224,12 +240,12 @@ fn AddTestForm(csrf: String, facets: Vec<FacetOptions>, kinds: Vec<String>) -> E
             }
             fieldset {
                 legend { "Files" }
-                FilePicker { kinds }
+                FilePicker { kinds, staged }
             }
             div { class: "actions",
                 // The first button is the one Enter presses: the safe one.
-                button { r#type: "submit", name: "save", value: "hidden", "Save hidden" }
-                button { r#type: "submit", name: "save", value: "publish", "Publish" }
+                button { r#type: "submit", name: "save", value: "hidden", disabled: blocked, "Save hidden" }
+                button { r#type: "submit", name: "save", value: "publish", disabled: blocked, "Publish" }
             }
         }
     }
@@ -319,32 +335,64 @@ fn preview(files: &[Picked]) -> Vec<Preview> {
 
 /// The drop zone: the native file input, styled as a large target (dropping
 /// files onto a file input works without JavaScript). After hydration it
-/// lists the chosen files with a kind and a label field for each. Shared
-/// with the Test edit page's **+ Add files**.
+/// lists the chosen files with a kind and a label field for each, and
+/// uploads each one on its own into `staged` (`crate::app::staging`): once
+/// all are in, the input loses its name and the form posts their `staged`
+/// references instead. Shared with the Test edit page's **+ Add files**;
+/// the parent's buttons wait while [`Staged::blocked`].
 #[component]
-pub(crate) fn FilePicker(kinds: Vec<String>) -> Element {
+pub(crate) fn FilePicker(kinds: Vec<String>, staged: Signal<Staged>) -> Element {
     let mut files = use_signal(Vec::<Picked>::new);
+    let mut hydrated = use_signal(|| false);
+    use_effect(move || hydrated.set(true));
     let picked = files.read().clone();
     let rows = preview(&picked);
     let refused = rows.iter().any(|row| matches!(row, Preview::Refused(_)));
+    let state = staged.read().clone();
+    let ready = state.ready();
+    let busy = state.files.iter().any(|f| f.busy());
     rsx! {
         input {
             id: "files",
             class: "dropzone-input",
             r#type: "file",
-            name: "files",
+            // Once every file is staged, only the references are posted.
+            name: if ready { "" } else { "files" },
             multiple: true,
             required: true,
             accept: ACCEPT,
             aria_label: "Files",
             onchange: move |event: FormEvent| {
-                files.set(
-                    event.files().iter().map(|f| Picked { name: f.name(), size: f.size() }).collect(),
-                );
+                let chosen: Vec<Picked> = event
+                    .files()
+                    .iter()
+                    .map(|f| Picked { name: f.name(), size: f.size() })
+                    .collect();
+                let names: Vec<String> = chosen.iter().map(|f| f.name.clone()).collect();
+                // With a file refused, the files must be chosen again, so
+                // none is sent.
+                let skip = if preview(&chosen).iter().any(|row| matches!(row, Preview::Refused(_))) {
+                    (0..chosen.len()).collect()
+                } else {
+                    Vec::new()
+                };
+                files.set(chosen);
+                stage_files("files", names, skip, staged);
             },
         }
+        if ready {
+            for id in state.ids() {
+                input { key: "{id}", r#type: "hidden", name: "staged", value: "{id}" }
+            }
+        }
         p { class: "hint",
-            "Drop the Test’s files here, or click to choose them: {ALLOWED_TYPES}, up to 100 MB each. "
+            "Drop the Test’s files here, or click to choose them: {ALLOWED_TYPES}, up to 90 MB each. "
+            if hydrated() {
+                "Each file uploads on its own as soon as it is chosen. "
+            } else {
+                "All the files go up in one upload, which can be at most about 95 MB in total, "
+                "so add big files a few at a time. "
+            }
             "Each file’s kind is guessed from its name (T_, S_, A_, C_, E_, “solutions”, “key”…). "
             "A Word file and a PDF with the same name become one Document."
         }
@@ -355,6 +403,7 @@ pub(crate) fn FilePicker(kinds: Vec<String>) -> Element {
                         th { "File" }
                         th { "Kind" }
                         th { "Label (optional)" }
+                        th { "Upload" }
                     }
                 }
                 tbody {
@@ -386,12 +435,19 @@ pub(crate) fn FilePicker(kinds: Vec<String>) -> Element {
                                     td { colspan: 2, class: "refused", "{message}" }
                                 },
                             }
+                            td {
+                                if let Some(file) = state.files.get(i) {
+                                    StagingStatus { state: file.clone() }
+                                }
+                            }
                         }
                     }
                 }
             }
             if refused {
                 p { class: "refusal", "Choose the files again without the ones that can’t be added." }
+            } else if busy {
+                p { class: "hint", "The buttons work once every file is uploaded." }
             }
         }
     }

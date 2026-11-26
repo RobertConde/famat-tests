@@ -79,11 +79,11 @@ pub async fn pdf_problems_page() -> Result<PdfProblemsPage, ServerFnError> {
 /// multipart post of `csrf` (first), `document`, `return_to` and the `pdf`
 /// file. The file replaces the Document's PDF and its status becomes ready.
 /// Answers 303 to `return_to`, 401/403 without a session or token, 404 for
-/// an unknown Document, 415 for a file that isn't a PDF, 413 over 100 MB.
+/// an unknown Document, 415 for a file that isn't a PDF, 413 over 90 MB.
 #[post("/api/admin/documents/upload-pdf",
     headers: HeaderMap,
     state: dioxus::fullstack::extract::Extension<crate::server::AppState>)]
-#[middleware(crate::server::upload::UploadLimit::max(crate::server::pdf::admin::MAX_BODY_BYTES))]
+#[middleware(crate::server::upload::UploadLimit::max(crate::app::upload_rules::MAX_ONE_FILE_BYTES))]
 pub async fn upload_pdf(form: MultipartFormData) -> Result<Response, ServerFnError> {
     crate::server::pdf::admin::upload(&state, &headers, form).await
 }

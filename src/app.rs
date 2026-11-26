@@ -15,6 +15,7 @@ pub mod change_log;
 pub mod document_kinds;
 pub mod facet_values;
 pub mod pdf;
+pub mod staging;
 pub mod test_edit;
 pub mod trash;
 pub mod upload_rules;

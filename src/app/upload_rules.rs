@@ -11,13 +11,29 @@ pub const ACCEPT: &str = ".pdf,.doc,.docx,.ppt,.pptx,.rtf,.odt,.zip";
 /// The allowed types, as a person reads them.
 pub const ALLOWED_TYPES: &str = "PDF, DOC, DOCX, PPT, PPTX, RTF, ODT and ZIP";
 
-/// The most one file may hold: 100 MB (MiB).
-pub const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
+/// The most one file may hold: 90 MB (decimal). Behind Cloudflare a request
+/// can be at most 100 MB, so a file this big and its form fit in one.
+pub const MAX_FILE_BYTES: u64 = 90_000_000;
 
-/// The most one upload (every file of one form post) may hold. axum's own
-/// default would be 2 MB.
+/// The most a post of several files may hold: Add test or **+ Add files**
+/// without JavaScript, which send every file in one request. About 95 MB,
+/// under Cloudflare's 100 MB. With JavaScript each file is staged in its own
+/// request (`server::staging`), and the form then posts only references.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub const MAX_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+pub const MAX_COMBINED_BYTES: usize = 95_000_000;
+
+/// The most a post of one file (staging a file, Upload PDF, Replace
+/// original) may hold: the file and its few fields.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub const MAX_ONE_FILE_BYTES: usize = MAX_FILE_BYTES as usize + 1024 * 1024;
+
+/// The most any post may hold. axum's own default would be 2 MB.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub const MAX_UPLOAD_BYTES: usize = if MAX_COMBINED_BYTES > MAX_ONE_FILE_BYTES {
+    MAX_COMBINED_BYTES
+} else {
+    MAX_ONE_FILE_BYTES
+};
 
 /// Word files, which pair with a PDF of the same name.
 const WORD_EXTENSIONS: [&str; 2] = ["doc", "docx"];
@@ -48,13 +64,19 @@ pub fn type_refusal(file_name: &str) -> String {
     format!("“{file_name}” can’t be added: only {ALLOWED_TYPES} files are allowed.")
 }
 
-/// A one-file post (Upload PDF, Replace original) over its limit before its
-/// file was reached.
+/// A one-file post (staging a file, Upload PDF, Replace original) over its
+/// limit before its file was reached.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub const POST_SIZE_REFUSAL: &str = "That is too much to upload: files can be at most 100 MB.";
+pub const POST_SIZE_REFUSAL: &str = "That is too much to upload: files can be at most 90 MB.";
+
+/// A post of several files over [`MAX_COMBINED_BYTES`].
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub const COMBINED_SIZE_REFUSAL: &str = "That is too much to upload at once: one upload can be at most about 95 MB \
+     in total. Upload fewer files at a time (add the rest with + Add files on the Test’s edit page), or turn on \
+     JavaScript, which uploads each file on its own.";
 
 pub fn size_refusal(file_name: &str) -> String {
-    format!("“{file_name}” can’t be added: files can be at most 100 MB.")
+    format!("“{file_name}” can’t be added: files can be at most 90 MB.")
 }
 
 /// The Document kind a file's name suggests, by kind name.

@@ -6,8 +6,11 @@
 //! 2. Each file streams into Garage as it arrives, under a Document ID drawn
 //!    from the `documents` sequence: `documents/{id}/original`, or `/pdf` for
 //!    the PDF of a Word+PDF pair ([`Pairer`]). A file of the wrong type or
-//!    over 100 MB refuses the whole upload, and everything stored so far is
-//!    deleted.
+//!    over 90 MB refuses the whole upload, and everything stored so far is
+//!    deleted. With JavaScript the page posts a `staged` field per file
+//!    instead (`server::staging`): its staged object is copied to the same
+//!    key, in the same order, so the Documents come out the same. Without
+//!    JavaScript every file is in this one post, of at most about 95 MB.
 //! 3. With every field read, the Facet choices, kinds and labels make a
 //!    [`Plan`]. If its six Facet values match an untrashed Test, the plan is
 //!    held in `pending_uploads` for the duplicate warning; otherwise it is
@@ -37,13 +40,15 @@ use super::{
     change_log::{self, Change, Entity},
     documents::escape_html,
     facet_values::{self, FacetValueList, LISTED_FACETS},
-    internal_error,
+    internal_error, staging,
     storage::{FileRole, PutError},
     upload,
 };
 use crate::app::{
     add_test::{AddTestPage, DocumentSummary, FacetOptions, FinishForm, PendingDocument, PendingUpload, TestSummary},
-    upload_rules::{self, MAX_FILE_BYTES, Pairer, Placement, guess_kind, size_refusal, split_name},
+    upload_rules::{
+        self, COMBINED_SIZE_REFUSAL, MAX_FILE_BYTES, Pairer, Placement, guess_kind, size_refusal, split_name,
+    },
 };
 
 /// Abandoned duplicate warnings are swept, with their files, after this.
@@ -193,10 +198,7 @@ impl Refusal {
 
     pub(super) fn multipart(e: MultipartError) -> Self {
         if upload::over_limit(&e) {
-            Self::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "That is too much to upload at once: add at most 1 GB of files at a time.",
-            )
+            Self::new(StatusCode::PAYLOAD_TOO_LARGE, COMBINED_SIZE_REFUSAL)
         } else {
             Self::bad_request("The upload was cut off. Try again.")
         }
@@ -239,6 +241,8 @@ pub(super) struct Upload {
     files: usize,
     pairer: Pairer,
     documents: Vec<Received>,
+    /// The staged files claimed so far, by ID.
+    staged: Vec<String>,
 }
 
 /// The text fields of a posted form, trimmed; empty when absent.
@@ -259,15 +263,10 @@ impl Fields for Upload {
 }
 
 impl Upload {
-    async fn receive_file(&mut self, state: &AppState, file_name: String, field: Field<'_>) -> Result<(), Refusal> {
-        let index = self.files;
-        self.files += 1;
-        if let Some(message) = upload_rules::refusal(&file_name, None) {
-            return Err(Refusal::new(StatusCode::UNSUPPORTED_MEDIA_TYPE, message));
-        }
-        let (_, extension) = split_name(&file_name);
-        let content_type = content_type(&extension);
-        let (document, role) = match self.pairer.place(&file_name) {
+    /// Where the `index`-th file, `file_name`, goes: a Document (an index
+    /// into `documents`, a new one drawing an ID) and the role it plays.
+    async fn place(&mut self, state: &AppState, file_name: &str, index: usize) -> Result<(usize, FileRole), Refusal> {
+        Ok(match self.pairer.place(file_name) {
             Placement::New { document } => {
                 let id = next_document_id(&state.db).await.map_err(Refusal::internal)?;
                 self.documents.push(Received {
@@ -294,7 +293,25 @@ impl Upload {
                 received.original_index = index;
                 (document, FileRole::Original)
             }
-        };
+        })
+    }
+
+    fn record(&mut self, document: usize, role: FileRole, file: StoredFile) {
+        match role {
+            FileRole::Original => self.documents[document].original = Some(file),
+            FileRole::Pdf => self.documents[document].pdf = Some(file),
+        }
+    }
+
+    async fn receive_file(&mut self, state: &AppState, file_name: String, field: Field<'_>) -> Result<(), Refusal> {
+        let index = self.files;
+        self.files += 1;
+        if let Some(message) = upload_rules::refusal(&file_name, None) {
+            return Err(Refusal::new(StatusCode::UNSUPPORTED_MEDIA_TYPE, message));
+        }
+        let (_, extension) = split_name(&file_name);
+        let content_type = content_type(&extension);
+        let (document, role) = self.place(state, &file_name, index).await?;
 
         let id = self.documents[document].id;
         let key = state.storage.document_key(id, role);
@@ -314,18 +331,50 @@ impl Upload {
             byte_size: stored.byte_size,
             sha256: hex::encode(stored.sha256),
         };
-        match role {
-            FileRole::Original => self.documents[document].original = Some(file),
-            FileRole::Pdf => self.documents[document].pdf = Some(file),
-        }
+        self.record(document, role, file);
         Ok(())
     }
 
-    /// Delete every file stored so far.
+    /// A file staged ahead of the form (`server::staging`), by ID: placed
+    /// and stored as if it had been in the post. Staging checked its type
+    /// and size.
+    async fn receive_staged(&mut self, state: &AppState, id: &str) -> Result<(), Refusal> {
+        let index = self.files;
+        self.files += 1;
+        let staged = staging::claim(&state.db, id)
+            .await
+            .map_err(Refusal::internal)?
+            .ok_or_else(|| Refusal::new(StatusCode::CONFLICT, staging::GONE))?;
+        self.staged.push(staged.id.clone());
+        let (document, role) = self.place(state, &staged.name, index).await?;
+        staged
+            .copy_to(state, self.documents[document].id, role)
+            .await
+            .map_err(Refusal::internal)?;
+        let file = StoredFile {
+            name: staged.name,
+            extension: staged.extension,
+            content_type: staged.content_type,
+            byte_size: staged.byte_size,
+            sha256: hex::encode(staged.sha256),
+        };
+        self.record(document, role, file);
+        Ok(())
+    }
+
+    /// Delete every file stored so far, and give back the staged files, so
+    /// the same form can be posted again.
     pub(super) async fn discard(&self, state: &AppState) {
         for document in &self.documents {
             state.storage.delete_document_files(document.id).await;
         }
+        staging::release(state, &self.staged).await;
+    }
+
+    /// Once the upload is saved (or held): delete the staged files, which
+    /// now live under their Documents.
+    pub(super) async fn saved(&self, state: &AppState) {
+        staging::forget(state, &self.staged).await;
     }
 }
 
@@ -343,6 +392,7 @@ pub async fn upload(
     };
     auth::require_admin_form(state, headers, &csrf).await?;
     sweep_abandoned(state).await;
+    staging::sweep(state).await;
 
     let mut upload = Upload::default();
     let planned = match receive(state, &mut form, &mut upload).await {
@@ -360,17 +410,19 @@ pub async fn upload(
     };
 
     match save_or_hold(state, &plan).await {
-        Ok(location) => Ok(auth::see_other(&location, None)),
+        Ok(location) => {
+            upload.saved(state).await;
+            Ok(auth::see_other(&location, None))
+        }
         Err(e) => {
-            for document in &plan.documents {
-                state.storage.delete_document_files(document.id).await;
-            }
+            upload.discard(state).await;
             Err(internal_error(e))
         }
     }
 }
 
-/// Read every field after the CSRF token, storing files as they come.
+/// Read every field after the CSRF token, storing files as they come: each
+/// `files` file, or each `staged` reference, in order.
 pub(super) async fn receive(
     state: &AppState,
     form: &mut MultipartFormData,
@@ -390,7 +442,13 @@ pub(super) async fn receive(
             Some(_) => {}
             None => {
                 let value = field.text().await.map_err(Refusal::multipart)?;
-                upload.fields.entry(name).or_insert(value);
+                if name == "staged" {
+                    if !value.trim().is_empty() {
+                        upload.receive_staged(state, &value).await?;
+                    }
+                } else {
+                    upload.fields.entry(name).or_insert(value);
+                }
             }
         }
     }
