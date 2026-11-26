@@ -90,9 +90,15 @@ async fn libreoffice_past_the_timeout_is_killed_with_every_process_it_started() 
         .join(uuid::Uuid::new_v4().simple().to_string());
     std::fs::create_dir_all(&work_dir).unwrap();
     let work = work_dir.display().to_string();
-    // A fresh LibreOffice profile takes seconds to start.
     let (app, cookie) = start(&[("PDF_TIMEOUT_SECS", "1"), ("PDF_WORK_DIR", &work)]).await;
-    let (test, documents) = add(&app, &cookie, &[("Test.docx", fixture("sample.docx"))]).await;
+    // 30,000 pages take LibreOffice far longer than a second, even on a
+    // fast machine (3,000 take about 3 s on an M5).
+    let mut long = String::from("{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Times New Roman;}}\\f0\\fs24\n");
+    for i in 0..30_000 {
+        long.push_str(&format!("Question {i}: if 2x + 3 = {i}, what is x?\\par\\page\n"));
+    }
+    long.push('}');
+    let (test, documents) = add(&app, &cookie, &[("Test.rtf", long.into_bytes())]).await;
 
     assert_eq!(settled(&app, &cookie, test).await, ["PDF failed"]);
     let page = app.get_page_as("/admin/needs-review", Some(&cookie)).await;
