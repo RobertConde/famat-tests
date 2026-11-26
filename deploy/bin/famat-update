@@ -22,12 +22,12 @@
 # Every outcome is logged (journalctl -u famat-update). The run exits non-zero
 # if anything failed or was rolled back, so the unit shows as failed.
 #
-# Settings (environment): FAMAT_DIR (default /etc/famat), FAMAT_UPDATE_TIMEOUT
+# Settings (environment): FAMAT_DIR (default /opt/stacks/famat), FAMAT_UPDATE_TIMEOUT
 # (default 300), FAMAT_UPDATE_STABLE (default 30), FAMAT_UPDATE_STATE (default
 # /var/lib/famat-update).
 set -euo pipefail
 
-DIR="${FAMAT_DIR:-/etc/famat}"
+DIR="${FAMAT_DIR:-/opt/stacks/famat}"
 TIMEOUT="${FAMAT_UPDATE_TIMEOUT:-300}"
 STABLE="${FAMAT_UPDATE_STABLE:-30}"
 STATE_DIR="${FAMAT_UPDATE_STATE:-/var/lib/famat-update}"

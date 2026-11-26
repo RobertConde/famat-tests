@@ -30,21 +30,21 @@ host:  famat.service          docker compose up / down, after docker.service and
 
 | In the repository | On the server |
 |---|---|
-| `deploy/compose.yaml` | `/etc/famat/compose.yaml` |
-| (not in git; optional) | `/etc/famat/compose.override.yaml`: local changes such as a pinned version, merged in by Compose |
-| `deploy/garage/garage.toml` | `/etc/famat/garage.toml` |
+| `deploy/compose.yaml` | `/opt/stacks/famat/compose.yaml` |
+| (not in git; optional) | `/opt/stacks/famat/compose.override.yaml`: local changes such as a pinned version, merged in by Compose |
+| `deploy/garage/garage.toml` | `/opt/stacks/famat/garage.toml` |
 | `deploy/systemd/famat.service`, `famat-update.{service,timer}`, `deploy/backup/famat-backup.{service,timer}` | `/etc/systemd/system/` |
 | `deploy/bin/famat`, `deploy/bin/famat-update`, `deploy/backup/famat-backup`, `deploy/garage/bootstrap.sh` | `/usr/local/sbin/famat`, `famat-update`, `famat-backup`, `famat-garage-bootstrap` |
-| `deploy/backup/backup.conf.example` | `/etc/famat/backup.conf` (copied once, then edited; mode 0600) |
-| `deploy/create-secrets.sh` | run from the checkout; writes `/etc/famat/secrets/` |
+| `deploy/backup/backup.conf.example` | `/opt/stacks/famat/backup.conf` (copied once, then edited; mode 0600) |
+| `deploy/create-secrets.sh` | run from the checkout; writes `/opt/stacks/famat/secrets/` |
 | `deploy/install.sh` | run from the checkout; copies all of the above |
-| (not in git) | `/etc/famat/secrets/*.env`, `/etc/famat/restic-password`, `/root/.ssh/storagebox` |
+| (not in git) | `/opt/stacks/famat/secrets/*.env`, `/opt/stacks/famat/restic-password`, `/root/.ssh/storagebox` |
 
-Docker Compose commands run from `/etc/famat` (`cd /etc/famat`), or with `--project-directory /etc/famat`, so that they find `compose.yaml` and the override.
+Docker Compose commands run from `/opt/stacks/famat` (`cd /opt/stacks/famat`), or with `--project-directory /opt/stacks/famat`, so that they find `compose.yaml` and the override.
 
 ## Secrets
 
-Root-only env files in `/etc/famat/secrets/` (directory 0700, files 0600). The compose file reads them with `env_file`, so each container gets only its own.
+Root-only env files in `/opt/stacks/famat/secrets/` (directory 0700, files 0600). The compose file reads them with `env_file`, so each container gets only its own.
 
 | File | Holds | Used by | Made by |
 |---|---|---|---|
@@ -55,7 +55,7 @@ Root-only env files in `/etc/famat/secrets/` (directory 0700, files 0600). The c
 
 The values also show in `docker inspect` and `docker compose config`, which only root (and the `docker` group, which is root-equivalent) can run. Don't paste their output anywhere.
 
-The Admin passcode is not one of these. `famat set-passcode` stores its argon2id hash in Postgres, so it is backed up and restored with the database. The restic password is in `/etc/famat/restic-password` and in the owner's password manager. It is the one secret a disaster recovery cannot do without.
+The Admin passcode is not one of these. `famat set-passcode` stores its argon2id hash in Postgres, so it is backed up and restored with the database. The restic password is in `/opt/stacks/famat/restic-password` and in the owner's password manager. It is the one secret a disaster recovery cannot do without.
 
 ## Why these choices
 

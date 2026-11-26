@@ -1,8 +1,8 @@
 # Single-node Garage for the FAMAT Test Bank. Installed to
-# /etc/famat/garage.toml and mounted read-only at /etc/garage.toml.
+# /opt/stacks/famat/garage.toml and mounted read-only at /etc/garage.toml.
 #
 # No secrets here: rpc_secret comes from GARAGE_RPC_SECRET in
-# /etc/famat/secrets/garage.env, and the admin API is not enabled. The bucket
+# /opt/stacks/famat/secrets/garage.env, and the admin API is not enabled. The bucket
 # and key are made by deploy/garage/bootstrap.sh.
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"

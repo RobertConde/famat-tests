@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Set up the single Garage node: give it a layout role, create the bucket,
-# and import the app's key from /etc/famat/secrets/s3.env. Idempotent: run it
+# and import the app's key from /opt/stacks/famat/secrets/s3.env. Idempotent: run it
 # after the first start, after a restore onto empty data directories, or any
 # time.
 #
@@ -12,14 +12,14 @@
 #                     uses it only to balance nodes, but it must be set.
 #   GARAGE_ZONE       default dc1
 #   S3_BUCKET         default famat
-#   FAMAT_SECRETS     default /etc/famat/secrets
+#   FAMAT_SECRETS     default /opt/stacks/famat/secrets
 set -euo pipefail
 
 CONTAINER="${GARAGE_CONTAINER:-famat-garage}"
 CAPACITY="${GARAGE_CAPACITY:-500G}"
 ZONE="${GARAGE_ZONE:-dc1}"
 BUCKET="${S3_BUCKET:-famat}"
-SECRETS="${FAMAT_SECRETS:-/etc/famat/secrets}"
+SECRETS="${FAMAT_SECRETS:-/opt/stacks/famat/secrets}"
 KEY_NAME=famat-app
 
 g() { docker exec -e RUST_LOG=warn "$CONTAINER" /garage "$@"; }

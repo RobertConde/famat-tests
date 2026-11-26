@@ -1,4 +1,4 @@
-# The FAMAT Test Bank: the Docker Compose project in /etc/famat
+# The FAMAT Test Bank: the Docker Compose project in /opt/stacks/famat
 # (deploy/compose.yaml). Starts on boot once Docker is up and the RAID is
 # mounted. `systemctl stop famat` removes the containers; the data stays on
 # the RAID.
@@ -23,7 +23,7 @@ AssertPathIsMountPoint=/mnt/raid
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/etc/famat
+WorkingDirectory=/opt/stacks/famat
 # Counted as started once Postgres, Garage and the app are healthy (the app
 # waits for the other two: depends_on). Then cloudflared, without waiting
 # for it: if Cloudflare can't be reached at boot, it keeps retrying on its

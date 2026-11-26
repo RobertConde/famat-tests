@@ -2,7 +2,7 @@
 # The *_ENABLED settings are read indirectly, in run_all.
 # shellcheck disable=SC2034
 # Nightly backups of everything on this server to restic (a Hetzner Storage
-# Box over SFTP), run by famat-backup.timer. Settings: /etc/famat/backup.conf
+# Box over SFTP), run by famat-backup.timer. Settings: /opt/stacks/famat/backup.conf
 # (deploy/backup/backup.conf.example).
 #
 #   famat-backup            the nightly run: every enabled part, then forget
@@ -28,7 +28,7 @@
 # and sends Better Stack a failure ping.
 set -euo pipefail
 
-CONF="${FAMAT_BACKUP_CONF:-/etc/famat/backup.conf}"
+CONF="${FAMAT_BACKUP_CONF:-/opt/stacks/famat/backup.conf}"
 
 # ---------------------------------------------------------------- defaults
 STAGING=/mnt/raid/famat/backup-staging
@@ -43,7 +43,7 @@ BETTERSTACK_HEARTBEAT_URL=
 LOCK_FILE=/run/famat.lock
 
 FAMAT_ENABLED=1
-FAMAT_DIR=/etc/famat
+FAMAT_DIR=/opt/stacks/famat
 FAMAT_POSTGRES_CONTAINER=famat-postgres
 FAMAT_DB_NAME=famat
 FAMAT_DB_USER=famat

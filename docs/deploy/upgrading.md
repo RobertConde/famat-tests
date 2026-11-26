@@ -1,6 +1,6 @@
 # Upgrading
 
-`docker compose` commands here run in `/etc/famat` (`cd /etc/famat`).
+`docker compose` commands here run in `/opt/stacks/famat` (`cd /opt/stacks/famat`).
 
 | What | How it updates |
 |---|---|
@@ -49,10 +49,10 @@ The next `famat-update` would pull `:latest` again, so also pin the version, bel
 
 ### Pinning a version
 
-To hold back a bad release, or to stay on one version, pin it in `/etc/famat/compose.override.yaml`. Compose merges that file into `compose.yaml` on its own, and `install.sh` never touches it. CI tags every image `sha-<first 12 of the commit>`:
+To hold back a bad release, or to stay on one version, pin it in `/opt/stacks/famat/compose.override.yaml`. Compose merges that file into `compose.yaml` on its own, and `install.sh` never touches it. CI tags every image `sha-<first 12 of the commit>`:
 
 ```sh
-cat > /etc/famat/compose.override.yaml <<'EOF'
+cat > /opt/stacks/famat/compose.override.yaml <<'EOF'
 services:
   app:
     image: ghcr.io/robertconde/famat-tests:sha-0123456789ab
@@ -68,10 +68,10 @@ docker compose up -d --no-deps app
 ```sh
 cd /opt/famat-tests && git pull
 deploy/install.sh                  # copies the compose file, units and scripts; keeps secrets, the override and backup.conf
-cd /etc/famat && docker compose up -d     # recreates only the containers whose configuration changed
+cd /opt/stacks/famat && docker compose up -d     # recreates only the containers whose configuration changed
 ```
 
-If `famat.service` itself changed, `systemctl restart famat` (it restarts everything). For a backup or update script change, nothing needs restarting. If `backup.conf.example` gained settings, copy the new ones into `/etc/famat/backup.conf` by hand.
+If `famat.service` itself changed, `systemctl restart famat` (it restarts everything). For a backup or update script change, nothing needs restarting. If `backup.conf.example` gained settings, copy the new ones into `/opt/stacks/famat/backup.conf` by hand.
 
 ## Postgres, a major version (e.g. 17 → 18)
 
@@ -81,7 +81,7 @@ The data directory format changes, so dump and restore:
 2. Stop the app and Postgres, and set the old data directory aside:
 
    ```sh
-   cd /etc/famat
+   cd /opt/stacks/famat
    docker compose stop cloudflared app postgres
    mv /mnt/raid/famat/postgres /mnt/raid/famat/postgres-17      # kept until the new one checks out
    install -d -m 0700 /mnt/raid/famat/postgres
@@ -94,7 +94,7 @@ The data directory format changes, so dump and restore:
 
    ```sh
    cd /opt/famat-tests && git pull && deploy/install.sh
-   cd /etc/famat
+   cd /opt/stacks/famat
    docker compose pull postgres
    docker compose up -d --wait postgres
    docker exec -i famat-postgres pg_restore -U famat -d famat --no-owner --exit-on-error \
@@ -114,7 +114,7 @@ Read the release notes from your version up to the target version first: <https:
 
    ```sh
    cd /opt/famat-tests && git pull && deploy/install.sh
-   cd /etc/famat
+   cd /opt/stacks/famat
    docker compose pull garage
    docker compose up -d --wait garage
    docker exec famat-garage /garage status
@@ -137,7 +137,7 @@ After a Docker or Compose upgrade, check that Compose still accepts the file: `d
 
 ## Changing a secret
 
-The secrets are env files in `/etc/famat/secrets/`. Compose recreates a container when its env file changes, at the next `docker compose up -d`.
+The secrets are env files in `/opt/stacks/famat/secrets/`. Compose recreates a container when its env file changes, at the next `docker compose up -d`.
 
 - **Tunnel token:** see [server-setup.md](server-setup.md), step 4.
 - **Database password.** Postgres only reads it when the data directory is first created, so change it in both places:
@@ -145,13 +145,13 @@ The secrets are env files in `/etc/famat/secrets/`. Compose recreates a containe
   ```sh
   new=$(openssl rand -hex 24)
   docker exec famat-postgres psql -U famat -d postgres -c "alter user famat password '$new'"
-  printf 'POSTGRES_PASSWORD=%s\nPGPASSWORD=%s\n' "$new" "$new" > /etc/famat/secrets/db.env
-  cd /etc/famat && docker compose up -d --no-deps postgres app
+  printf 'POSTGRES_PASSWORD=%s\nPGPASSWORD=%s\n' "$new" "$new" > /opt/stacks/famat/secrets/db.env
+  cd /opt/stacks/famat && docker compose up -d --no-deps postgres app
   ```
 
 - **Garage key:**
-  1. Note the old key ID (`S3_ACCESS_KEY_ID` in `s3.env`), delete `/etc/famat/secrets/s3.env`, and re-run `deploy/create-secrets.sh`.
+  1. Note the old key ID (`S3_ACCESS_KEY_ID` in `s3.env`), delete `/opt/stacks/famat/secrets/s3.env`, and re-run `deploy/create-secrets.sh`.
   2. Run `famat-garage-bootstrap`, which imports the new key.
-  3. `cd /etc/famat && docker compose up -d --no-deps app`.
+  3. `cd /opt/stacks/famat && docker compose up -d --no-deps app`.
   4. Delete the old key: `docker exec famat-garage /garage key delete --yes <old key id>`.
 - **Admin passcode:** `famat set-passcode` ([admin.md](admin.md)).
