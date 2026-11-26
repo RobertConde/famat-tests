@@ -14,7 +14,10 @@ use futures::{StreamExt, TryStreamExt, stream};
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio_util::io::ReaderStream;
 
-use super::plan::{LAST_LEGACY_DOCUMENT_ID, LAST_LEGACY_TEST_ID, Plan, PlannedDocument};
+use super::{
+    plan::{LAST_LEGACY_DOCUMENT_ID, LAST_LEGACY_TEST_ID, Plan},
+    sources::SourceFile,
+};
 use crate::server::storage::{FileRole, Storage, Stored};
 
 /// Files streamed into Garage at once.
@@ -66,18 +69,37 @@ pub async fn ensure_not_frozen<'e>(db: impl sqlx::PgExecutor<'e>) -> anyhow::Res
     Ok(())
 }
 
-/// Stream every Document's Original into Garage, then read each one back and
+/// What was stored in Garage, by Document ID and role (`original`, `pdf`).
+pub type StoredFiles = BTreeMap<(i64, &'static str), Stored>;
+
+/// Every object the plan stores: each Document's Original, and its supplied
+/// PDF if it has one.
+fn objects(plan: &Plan) -> impl Iterator<Item = (i64, FileRole, &SourceFile, &'static str)> {
+    plan.documents.iter().flat_map(|document| {
+        std::iter::once((document.id, FileRole::Original, &document.file, document.content_type)).chain(
+            document
+                .pdf
+                .iter()
+                .map(|pdf| (document.id, FileRole::Pdf, &pdf.file, "application/pdf")),
+        )
+    })
+}
+
+/// Stream every Document's files into Garage, then read each one back and
 /// check its size and SHA-256 against what was read from the source file.
-/// Returns what was stored, by Document ID.
-pub async fn store_files(storage: &Storage, plan: &Plan) -> anyhow::Result<BTreeMap<i64, Stored>> {
-    let total = plan.documents.len();
+pub async fn store_files(storage: &Storage, plan: &Plan) -> anyhow::Result<StoredFiles> {
+    let total = objects(plan).count();
     let mut done = 0;
     let mut stored = BTreeMap::new();
-    let mut uploads = stream::iter(&plan.documents)
-        .map(|document| async move { store_file(storage, document).await.map(|s| (document.id, s)) })
+    let mut uploads = stream::iter(objects(plan))
+        .map(|(id, role, file, content_type)| async move {
+            store_file(storage, id, role, file, content_type)
+                .await
+                .map(|s| ((id, role.as_str()), s))
+        })
         .buffer_unordered(CONCURRENT_UPLOADS);
-    while let Some((id, file)) = uploads.try_next().await? {
-        stored.insert(id, file);
+    while let Some((key, file)) = uploads.try_next().await? {
+        stored.insert(key, file);
         done += 1;
         if done % 500 == 0 || done == total {
             eprintln!("famat import: stored {done} of {total} files");
@@ -86,22 +108,28 @@ pub async fn store_files(storage: &Storage, plan: &Plan) -> anyhow::Result<BTree
     Ok(stored)
 }
 
-async fn store_file(storage: &Storage, document: &PlannedDocument) -> anyhow::Result<Stored> {
-    let path = &document.file.path;
-    let key = storage.document_key(document.id, FileRole::Original);
+async fn store_file(
+    storage: &Storage,
+    id: i64,
+    role: FileRole,
+    source: &SourceFile,
+    content_type: &str,
+) -> anyhow::Result<Stored> {
+    let path = &source.path;
+    let key = storage.document_key(id, role);
     let file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("opening {}", path.display()))?;
     let body = ReaderStream::with_capacity(file, 1024 * 1024);
     let stored = storage
-        .put_stream(&key, document.content_type, body, u64::MAX)
+        .put_stream(&key, content_type, body, u64::MAX)
         .await
         .map_err(|e| anyhow::anyhow!("storing {}: {e}", path.display()))?;
-    if stored.byte_size as u64 != document.file.byte_size {
+    if stored.byte_size as u64 != source.byte_size {
         bail!(
             "{} changed while it was being imported: it was {} bytes, {} were read",
             path.display(),
-            document.file.byte_size,
+            source.byte_size,
             stored.byte_size
         );
     }
@@ -120,7 +148,7 @@ async fn store_file(storage: &Storage, document: &PlannedDocument) -> anyhow::Re
 }
 
 /// Replace the archive tables with the plan, in one transaction.
-pub async fn write(db: &PgPool, plan: &Plan, stored: &BTreeMap<i64, Stored>) -> anyhow::Result<()> {
+pub async fn write(db: &PgPool, plan: &Plan, stored: &StoredFiles) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;
     // SHARE blocks every write to the change log, so no Admin change can
     // commit between this check and the end of the import.
@@ -262,11 +290,7 @@ struct TestColumns {
     published: Vec<bool>,
 }
 
-async fn write_documents(
-    tx: &mut Transaction<'_, Postgres>,
-    plan: &Plan,
-    stored: &BTreeMap<i64, Stored>,
-) -> anyhow::Result<()> {
+async fn write_documents(tx: &mut Transaction<'_, Postgres>, plan: &Plan, stored: &StoredFiles) -> anyhow::Result<()> {
     let kinds: Vec<(String, i64)> = sqlx::query_as("SELECT name, id FROM document_kinds")
         .fetch_all(&mut **tx)
         .await?;
@@ -274,16 +298,13 @@ async fn write_documents(
 
     let (mut ids, mut kind_ids, mut published, mut needs_review, mut comments) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut sources, mut pdf_statuses) = (Vec::new(), Vec::new());
+    let (mut sources, mut pdf_statuses, mut notes) = (Vec::new(), Vec::new(), Vec::new());
     let (mut link_tests, mut link_documents) = (Vec::new(), Vec::new());
-    let (mut content_types, mut extensions, mut sizes, mut hashes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut files = FileColumns::default();
     for document in &plan.documents {
         let kind_id = kinds
             .get(document.kind)
             .with_context(|| format!("there is no Document kind {:?}", document.kind))?;
-        let file = stored
-            .get(&document.id)
-            .with_context(|| format!("D{}'s file was not stored", document.id))?;
         ids.push(document.id);
         kind_ids.push(*kind_id);
         published.push(document.published);
@@ -291,21 +312,30 @@ async fn write_documents(
         comments.push(document.needs_review.as_deref());
         sources.push(document.label_source.as_str());
         pdf_statuses.push(document.pdf_status);
+        notes.push(document.note.as_deref());
         for test in &document.tests {
             link_tests.push(*test);
             link_documents.push(document.id);
         }
-        content_types.push(document.content_type);
-        extensions.push(document.extension.as_str());
-        sizes.push(file.byte_size);
-        hashes.push(hex::encode(file.sha256));
+        files.push(
+            stored,
+            document.id,
+            FileRole::Original,
+            document.content_type,
+            &document.extension,
+        )?;
+        if document.pdf.is_some() {
+            files.push(stored, document.id, FileRole::Pdf, "application/pdf", "pdf")?;
+        }
     }
 
     sqlx::query(
-        "INSERT INTO documents (id, kind_id, published, needs_review, needs_review_comment, label_source, pdf_status)
-         SELECT id, kind_id, published, needs_review, comment, source::label_source, pdf_status::pdf_status
-         FROM unnest($1::bigint[], $2::bigint[], $3::boolean[], $4::boolean[], $5::text[], $6::text[], $7::text[])
-              AS d (id, kind_id, published, needs_review, comment, source, pdf_status)",
+        "INSERT INTO documents (id, kind_id, published, needs_review, needs_review_comment, label_source,
+                               pdf_status, note)
+         SELECT id, kind_id, published, needs_review, comment, source::label_source, pdf_status::pdf_status, note
+         FROM unnest($1::bigint[], $2::bigint[], $3::boolean[], $4::boolean[], $5::text[], $6::text[], $7::text[],
+                     $8::text[])
+              AS d (id, kind_id, published, needs_review, comment, source, pdf_status, note)",
     )
     .bind(&ids)
     .bind(&kind_ids)
@@ -314,6 +344,7 @@ async fn write_documents(
     .bind(&comments)
     .bind(&sources)
     .bind(&pdf_statuses)
+    .bind(&notes)
     .execute(&mut **tx)
     .await?;
 
@@ -325,29 +356,66 @@ async fn write_documents(
 
     sqlx::query(
         "INSERT INTO document_files (document_id, role, content_type, extension, byte_size, sha256)
-         SELECT id, 'original', content_type, extension, byte_size, decode(sha256, 'hex')
-         FROM unnest($1::bigint[], $2::text[], $3::text[], $4::bigint[], $5::text[])
-              AS f (id, content_type, extension, byte_size, sha256)",
+         SELECT id, role::file_role, content_type, extension, byte_size, decode(sha256, 'hex')
+         FROM unnest($1::bigint[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::text[])
+              AS f (id, role, content_type, extension, byte_size, sha256)",
     )
-    .bind(&ids)
-    .bind(&content_types)
-    .bind(&extensions)
-    .bind(&sizes)
-    .bind(&hashes)
+    .bind(&files.ids)
+    .bind(&files.roles)
+    .bind(&files.content_types)
+    .bind(&files.extensions)
+    .bind(&files.sizes)
+    .bind(&files.hashes)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// The `document_files` rows, as columns.
+#[derive(Default)]
+struct FileColumns<'a> {
+    ids: Vec<i64>,
+    roles: Vec<&'static str>,
+    content_types: Vec<&'a str>,
+    extensions: Vec<&'a str>,
+    sizes: Vec<i64>,
+    hashes: Vec<String>,
+}
+
+impl<'a> FileColumns<'a> {
+    fn push(
+        &mut self,
+        stored: &StoredFiles,
+        id: i64,
+        role: FileRole,
+        content_type: &'a str,
+        extension: &'a str,
+    ) -> anyhow::Result<()> {
+        let file = stored
+            .get(&(id, role.as_str()))
+            .with_context(|| format!("D{id}'s {} was not stored", role.as_str()))?;
+        self.ids.push(id);
+        self.roles.push(role.as_str());
+        self.content_types.push(content_type);
+        self.extensions.push(extension);
+        self.sizes.push(file.byte_size);
+        self.hashes.push(hex::encode(file.sha256));
+        Ok(())
+    }
+}
+
+/// The Garage keys of every object the plan stores.
+fn planned_keys(storage: &Storage, plan: &Plan) -> HashSet<String> {
+    objects(plan)
+        .map(|(id, role, _, _)| storage.document_key(id, role))
+        .collect()
 }
 
 /// Delete every Document object in Garage that the import did not just
 /// write: what a previous run, or an upload since, left behind. Returns how
 /// many were deleted.
 pub async fn sweep(storage: &Storage, plan: &Plan) -> anyhow::Result<usize> {
-    let kept: HashSet<String> = plan
-        .documents
-        .iter()
-        .map(|d| storage.document_key(d.id, FileRole::Original))
-        .collect();
+    let kept = planned_keys(storage, plan);
     let mut deleted = 0;
     for key in storage.list(&storage.documents_prefix()).await? {
         if !kept.contains(&key) {
@@ -356,4 +424,19 @@ pub async fn sweep(storage: &Storage, plan: &Plan) -> anyhow::Result<usize> {
         }
     }
     Ok(deleted)
+}
+
+/// After the sweep: how many of the planned objects Garage holds, and the
+/// keys of any it holds besides them.
+pub async fn check_garage(storage: &Storage, plan: &Plan) -> anyhow::Result<(usize, Vec<String>)> {
+    let planned = planned_keys(storage, plan);
+    let (mut held, mut extra) = (0, Vec::new());
+    for key in storage.list(&storage.documents_prefix()).await? {
+        if planned.contains(&key) {
+            held += 1;
+        } else {
+            extra.push(key);
+        }
+    }
+    Ok((held, extra))
 }

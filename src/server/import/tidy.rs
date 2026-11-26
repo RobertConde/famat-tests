@@ -57,6 +57,28 @@ pub struct TestLabels {
     pub host: Option<String>,
 }
 
+impl TestLabels {
+    /// "1993 February Invitational · Plant City · Calculus/Mu Individual",
+    /// with a dash for each unknown value, as the Add test summary writes it.
+    pub fn describe(&self) -> String {
+        let dash = |value: Option<&str>| value.unwrap_or("—").to_owned();
+        let mut event = vec![self.year.map_or_else(|| "—".to_owned(), |y| y.to_string())];
+        match &self.month {
+            Month::Known(month) => event.push(month.clone()),
+            Month::Unknown => event.push("—".to_owned()),
+            Month::NotApplicable => {}
+        }
+        event.push(dash(self.competition.as_deref()));
+        format!(
+            "{} · {} · {} {}",
+            event.join(" "),
+            dash(self.host.as_deref()),
+            dash(self.division_level.as_deref()),
+            dash(self.test_type.as_deref())
+        )
+    }
+}
+
 /// One row, tidied.
 #[derive(Clone, Debug)]
 pub struct Tidied {

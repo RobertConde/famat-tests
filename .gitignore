@@ -6,6 +6,8 @@ code.tar.gz
 # ...and the import's synthetic test fixture.
 !/tests/fixtures/import/*.sql
 config.ini
+# famat import's reconciliation report (its default --report)
+/import-report.txt
 data/
 
 # Agent worktrees

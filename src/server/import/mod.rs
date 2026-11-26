@@ -3,25 +3,31 @@
 //!
 //! ```text
 //! famat import --sheet "test list - 000final.csv" --ai-labels data/labels/ai-labels.csv \
-//!              --docs <docs export> --legacy-sql doralmao_famat.sql [--dry-run]
+//!              --docs <docs export> --legacy-sql doralmao_famat.sql \
+//!              --unpacked data/labels/unpacked.csv --unpacked-dir data/unpacked \
+//!              --attach data/labels/attach-1.out.csv --attach data/labels/attach-2.out.csv \
+//!              --review data/labels/review-core.csv [--report import-report.txt] [--dry-run]
 //! ```
 //!
 //! 1. [`sources`] reads the inputs as they are.
-//! 2. [`plan::Plan::build`] tidies the values ([`tidy`]), groups Documents
-//!    into Tests, keeps the legacy IDs and seeds the display orders. Nothing
-//!    is written yet; `--dry-run` stops here and prints the summary.
+//! 2. [`plan::Plan::build`] tidies the values ([`tidy`]), applies the
+//!    special cases ([`special`]), groups Documents into Tests, keeps the
+//!    legacy IDs and seeds the display orders. Nothing is written yet;
+//!    `--dry-run` stops here, with the summary and the reconciliation report.
 //! 3. [`load`] refuses if an Admin has changed anything, streams every file
 //!    into Garage and checks Garage's copy against it, then replaces the
 //!    archive tables in one transaction and removes stale Garage objects.
-//!
-//! #31 adds its passes to the plan (see [`plan`]) and its reconciliation
-//! report to the summary; [`plan::Plan::skipped`] lists what was not
-//! imported.
+//! 4. Backfill: every Original being prepared gets a PDF conversion job;
+//!    a running server's workers pick them up.
+//! 5. [`report`]: the reconciliation report, to stdout (its summary) and
+//!    to the report file (all of it).
 
 mod csv;
 mod load;
 mod plan;
+mod report;
 mod sources;
+mod special;
 // Old search URLs are translated with the import's tidying (`super::legacy`).
 pub(crate) mod tidy;
 
@@ -31,8 +37,9 @@ use std::{collections::BTreeMap, fmt::Write, path::PathBuf};
 
 use anyhow::{Context, bail};
 
-use super::{config::Config, db, storage::Storage};
+use super::{config::Config, db, pdf, storage::Storage};
 use plan::Plan;
+use report::Loaded;
 use sources::{Inputs, LabelSource, Sources};
 
 pub const USAGE: &str = "\
@@ -42,31 +49,47 @@ pub const USAGE: &str = "\
                    --ai-labels FILE    data/labels/ai-labels.csv
                    --docs DIR          the docs export (files named \"<tid> <name>\")
                    --legacy-sql FILE   doralmao_famat.sql
-                   --dry-run           only read the inputs and print the summary";
+                   --unpacked FILE     data/labels/unpacked.csv
+                   --unpacked-dir DIR  data/unpacked (unpacked.csv's paths start here)
+                   --attach FILE       an attach decisions file (attach-N.out.csv);
+                                       give it once per file
+                   --review FILE       data/labels/review-core.csv
+                   --report FILE       where to write the reconciliation report
+                                       (default import-report.txt)
+                   --dry-run           only read the inputs; print the summary and
+                                       write the report, but not the archive";
+
+/// The default `--report`.
+const DEFAULT_REPORT: &str = "import-report.txt";
 
 /// `famat import …`: the options after `import`.
 pub fn main(args: &[&str]) -> anyhow::Result<String> {
-    let (inputs, dry_run) = parse_args(args)?;
-    let sources = Sources::read(&inputs)?;
+    let options = parse_args(args)?;
+    let sources = Sources::read(&options.inputs)?;
     let read = describe_sources(&sources);
     let plan = Plan::build(sources)?;
     let mut summary = read + &describe_plan(&plan);
-    if dry_run {
-        summary.push_str("Dry run: nothing was written.\n");
+    if options.dry_run {
+        let report = report::reconcile(&plan, &Loaded::DryRun);
+        write_report(&options.report, &report.full)?;
+        summary.push_str(&report.summary);
+        writeln!(summary, "Full report: {}", options.report.display())?;
+        summary.push_str("Dry run: nothing was written to Postgres or Garage.\n");
         return Ok(summary);
     }
 
     let config = Config::from_env()?;
-    let stored = super::cli::runtime().block_on(async {
+    let (stored, swept, held, extra, queued) = super::cli::runtime().block_on(async {
         let db = db::connect(&config.database).await?;
         load::ensure_not_frozen(&db).await?;
         let storage = Storage::new(&config.storage);
         let stored = load::store_files(&storage, &plan).await?;
         load::write(&db, &plan, &stored).await?;
         let swept = load::sweep(&storage, &plan).await?;
-        anyhow::Ok((stored, swept))
+        let (held, extra) = load::check_garage(&storage, &plan).await?;
+        let queued = pdf::enqueue_preparing(&db).await.context("queuing PDF conversions")?;
+        anyhow::Ok((stored, swept, held, extra, queued))
     })?;
-    let (stored, swept) = stored;
     let bytes: i64 = stored.values().map(|s| s.byte_size).sum();
     writeln!(
         summary,
@@ -75,11 +98,35 @@ pub fn main(args: &[&str]) -> anyhow::Result<String> {
         bytes as f64 / 1e6,
         plural(swept, "object"),
     )?;
+    let report = report::reconcile(
+        &plan,
+        &Loaded::Written {
+            stored: &stored,
+            held,
+            extra,
+            queued,
+        },
+    );
+    write_report(&options.report, &report.full)?;
+    summary.push_str(&report.summary);
+    writeln!(summary, "Full report: {}", options.report.display())?;
     Ok(summary)
 }
 
-fn parse_args(args: &[&str]) -> anyhow::Result<(Inputs, bool)> {
-    let (mut sheet, mut ai_labels, mut docs, mut legacy_sql, mut dry_run) = (None, None, None, None, false);
+fn write_report(path: &std::path::Path, report: &str) -> anyhow::Result<()> {
+    std::fs::write(path, report).with_context(|| format!("writing the report to {}", path.display()))
+}
+
+struct Options {
+    inputs: Inputs,
+    report: PathBuf,
+    dry_run: bool,
+}
+
+fn parse_args(args: &[&str]) -> anyhow::Result<Options> {
+    let (mut sheet, mut ai_labels, mut docs, mut legacy_sql) = (None, None, None, None);
+    let (mut unpacked, mut unpacked_dir, mut attach, mut review) = (None, None, Vec::new(), None);
+    let (mut report, mut dry_run) = (None, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| {
@@ -92,20 +139,33 @@ fn parse_args(args: &[&str]) -> anyhow::Result<(Inputs, bool)> {
             "--ai-labels" => ai_labels = Some(value(arg)?),
             "--docs" => docs = Some(value(arg)?),
             "--legacy-sql" => legacy_sql = Some(value(arg)?),
+            "--unpacked" => unpacked = Some(value(arg)?),
+            "--unpacked-dir" => unpacked_dir = Some(value(arg)?),
+            "--attach" => attach.push(value(arg)?),
+            "--review" => review = Some(value(arg)?),
+            "--report" => report = Some(value(arg)?),
             "--dry-run" => dry_run = true,
             other => bail!("unexpected argument {other:?}"),
         }
     }
     let required = |value: Option<PathBuf>, name: &str| value.with_context(|| format!("{name} is required"));
-    Ok((
-        Inputs {
+    if attach.is_empty() {
+        bail!("--attach is required (once per attach decisions file)");
+    }
+    Ok(Options {
+        inputs: Inputs {
             sheet: required(sheet, "--sheet")?,
             ai_labels: required(ai_labels, "--ai-labels")?,
             docs: required(docs, "--docs")?,
             legacy_sql: required(legacy_sql, "--legacy-sql")?,
+            unpacked: required(unpacked, "--unpacked")?,
+            unpacked_dir: required(unpacked_dir, "--unpacked-dir")?,
+            attach,
+            review: required(review, "--review")?,
         },
+        report: report.unwrap_or_else(|| PathBuf::from(DEFAULT_REPORT)),
         dry_run,
-    ))
+    })
 }
 
 // ------------------------------------------------------------------ summary
@@ -116,13 +176,26 @@ fn describe_sources(sources: &Sources) -> String {
         .map(|r| r.file_number)
         .collect::<std::collections::BTreeSet<_>>()
         .len();
+    let bundles = sources
+        .unpacked
+        .iter()
+        .map(|d| d.bundle)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     format!(
         "Read {} sheet rows, {} AI label rows ({ai_documents} Documents), {} files in the docs export \
-         and {} old Tests.\n",
+         and {} old Tests.\n\
+         Read {} unpacked Documents from {bundles} {} ({} files in the unpacked directory), {} attach \
+         decisions and {} review flags.\n",
         rows(LabelSource::Sheet).count(),
         rows(LabelSource::Ai).count(),
         sources.files.len(),
         sources.legacy_tests.len(),
+        sources.unpacked.len(),
+        plural(bundles, "bundle zip"),
+        sources.unpacked_files.len(),
+        sources.decisions.len(),
+        sources.review.len(),
     )
 }
 
@@ -178,21 +251,31 @@ fn describe_plan(plan: &Plan) -> String {
         }
     }
     let review = plan.documents.iter().filter(|d| d.needs_review.is_some()).count();
-    let _ = writeln!(out, "Needs review: {review} {}.", plural(review, "Document"));
-
-    // What #31 will act on, so a dry run shows its size.
-    let ai_flag = |pick: fn(&sources::AiColumns) -> bool| {
-        plan.documents
-            .iter()
-            .filter(|d| d.rows.iter().filter_map(|r| r.ai.as_ref()).any(pick))
-            .count()
-    };
+    let low = plan
+        .documents
+        .iter()
+        .filter(|d| {
+            d.rows
+                .iter()
+                .filter_map(|r| r.ai.as_ref())
+                .any(|ai| ai.confidence.eq_ignore_ascii_case("low"))
+        })
+        .count();
     let _ = writeln!(
         out,
-        "Left for #31: the AI marks {} Documents Hidden and {} as duplicates; {} have a low-confidence AI row.",
-        ai_flag(|ai| ai.hidden.eq_ignore_ascii_case("yes")),
-        ai_flag(|ai| !ai.duplicate_of.is_empty()),
-        ai_flag(|ai| ai.confidence.eq_ignore_ascii_case("low")),
+        "Needs review: {review} {}; {low} have a low-confidence AI row.",
+        plural(review, "Document")
+    );
+    let supplied = plan.documents.iter().filter(|d| d.pdf.is_some()).count();
+    let _ = writeln!(
+        out,
+        "PDFs: {} Originals are PDFs, {supplied} have a supplied PDF, {} are to be converted, {} cannot be.",
+        plan.documents.iter().filter(|d| d.extension == "pdf").count(),
+        plan.documents.iter().filter(|d| d.pdf_status == "preparing").count(),
+        plan.documents
+            .iter()
+            .filter(|d| d.pdf_status == "not_convertible")
+            .count(),
     );
 
     if !plan.skipped.is_empty() {

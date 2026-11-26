@@ -36,6 +36,18 @@ const LIBREOFFICE: &[&str] = &[
 /// Originals [`image_to_pdf`] wraps.
 const IMAGES: &[&str] = &["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp", "webp"];
 
+/// Whether a PDF can be made of an Original with this extension (lower
+/// case, no dot): LibreOffice's formats and images. A PDF is its own PDF.
+pub fn convertible(extension: &str) -> bool {
+    LIBREOFFICE.contains(&extension) || IMAGES.contains(&extension)
+}
+
+/// Whether LibreOffice converts this extension: a Word or PowerPoint
+/// Original, or one of their open relatives.
+pub fn office(extension: &str) -> bool {
+    LIBREOFFICE.contains(&extension)
+}
+
 /// What the `document_files` row says about an Original.
 pub(super) struct Original {
     pub extension: String,
