@@ -8,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod documents;
 pub mod download_name;
+pub mod facet_values;
 pub mod import;
 pub mod pdf;
 pub mod search;

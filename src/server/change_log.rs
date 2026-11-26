@@ -78,7 +78,6 @@ impl Change {
     }
 
     /// A field of a record being deleted.
-    #[allow(dead_code, reason = "for permanent deletion from Trash (#26)")]
     pub fn cleared(field: &'static str, before: impl LogValue) -> Self {
         Self::new(field, before, None::<String>)
     }
@@ -184,7 +183,6 @@ pub async fn record_created(
 
 /// Record a permanently deleted record: an `id` entry, then each field with
 /// no after. Give fields with [`Change::cleared`].
-#[allow(dead_code, reason = "for permanent deletion from Trash (#26)")]
 pub async fn record_deleted(
     tx: &mut Transaction<'_, Postgres>,
     entity: Entity,

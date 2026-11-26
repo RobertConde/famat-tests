@@ -68,6 +68,10 @@ _Avoid_: Style
 The school or organization that ran the event the Test was given at (FAMAT for State, MAO for National). The school that wrote a Test is not its Host.
 _Avoid_: Writer, school
 
+**Alias**:
+A former name of a Facet value, kept when it is renamed or merged into another value, so that old links and searches still find the same Tests.
+_Avoid_: Synonym, old value
+
 ### Question bank (future; not built in v1)
 
 **Question**:

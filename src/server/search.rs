@@ -5,7 +5,10 @@
 //!
 //! - `year`, `month`, `competition`, `division_level`, `test_type`, `host`:
 //!   empty or absent for Any, `unknown` for Unknown, otherwise a Facet value's
-//!   name (a number for `year`). A value that names nothing matches nothing.
+//!   name (a number for `year`). A former name (an alias, kept on rename and
+//!   merge) finds the same value, as does the name in another case, and the
+//!   page then shows the current name. A value that names nothing matches
+//!   nothing.
 //! - `includes`: `test`, `answers` or `solutions`, repeatable. Each one keeps
 //!   only Tests with a Published Document whose kind contains questions,
 //!   answers or solutions.
@@ -22,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
 
+use super::facet_values::FacetValueList;
 use crate::{
     app::{DocumentLink, FacetValue, SearchOptions, SearchQuery, SearchResults, SelectedTest, TestRow, UNKNOWN},
     download::{Contents, Format, GroupCounts, MAX_BULK_TESTS, parse_selection, selection_value},
@@ -43,8 +47,8 @@ pub(super) const RESULTS_ORDER: &str = "t.year DESC NULLS LAST,
 /// `?`) asks for.
 pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResults, sqlx::Error> {
     let params = Params::parse(raw_query.unwrap_or(""));
-    let query = params.search_query();
-    let values = FacetValues::load(db).await?;
+    let values = FacetValueList::load(db).await?;
+    let query = current_names(params.search_query(), &values);
     let filters = Filters::resolve(&query, &values);
 
     let mut count = QueryBuilder::<Postgres>::new("SELECT count(*) FROM tests t");
@@ -211,35 +215,25 @@ fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
 
 // ------------------------------------------------------------------ filters
 
-/// Every Facet value, by Facet, in display order.
-struct FacetValues(Vec<(String, i64, String)>);
-
-impl FacetValues {
-    async fn load(db: &PgPool) -> Result<Self, sqlx::Error> {
-        Ok(Self(
-            sqlx::query_as(
-                "SELECT facet::text, id, name FROM facet_values
-                 ORDER BY facet, display_order, name",
-            )
-            .fetch_all(db)
-            .await?,
-        ))
+/// The search with each Facet value written by its current name, so a
+/// search by a former name (or in another case) shows its value chosen in
+/// the dropdown and links with the name it has now.
+fn current_names(mut query: SearchQuery, values: &FacetValueList) -> SearchQuery {
+    for (facet, raw) in [
+        ("month", &mut query.month),
+        ("competition", &mut query.competition),
+        ("division_level", &mut query.division_level),
+        ("test_type", &mut query.test_type),
+        ("host", &mut query.host),
+    ] {
+        if raw.is_empty() || raw == UNKNOWN {
+            continue;
+        }
+        if let Some(name) = values.find(facet, raw).and_then(|id| values.name(facet, id)) {
+            *raw = name.to_owned();
+        }
     }
-
-    fn names(&self, facet: &str) -> Vec<String> {
-        self.0
-            .iter()
-            .filter(|(f, _, _)| f == facet)
-            .map(|(_, _, name)| name.clone())
-            .collect()
-    }
-
-    fn id(&self, facet: &str, name: &str) -> Option<i64> {
-        self.0
-            .iter()
-            .find(|(f, _, n)| f == facet && n == name)
-            .map(|(_, id, _)| *id)
-    }
+    query
 }
 
 /// What one dropdown asks for.
@@ -277,11 +271,11 @@ struct Filters {
 }
 
 impl Filters {
-    fn resolve(query: &SearchQuery, values: &FacetValues) -> Self {
+    fn resolve(query: &SearchQuery, values: &FacetValueList) -> Self {
         let facet = |facet: &str, column, unknown, raw: &str| FacetFilter {
             column,
             unknown,
-            filter: Filter::from_raw(raw, |name| values.id(facet, name)),
+            filter: Filter::from_raw(raw, |name| values.find(facet, name)),
         };
         let mut includes = Vec::new();
         if query.includes_test {
