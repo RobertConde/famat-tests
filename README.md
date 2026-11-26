@@ -91,7 +91,7 @@ There is one entry per field, with human-readable values (Facet value names, `tr
 - `src/app.rs`: the Dioxus app (routes, pages, server functions), compiled for both server and WASM
 - `src/app/admin.rs`: the login and logout pages and the Admin menu
 - `src/app/add_test.rs`, `src/app/upload_rules.rs`: the Add test page, and the file rules it shares with the server (allowed types, kind guessing, Word+PDF pairing)
-- `src/download.rs`: what the download menus offer (kind groups, Formats), shared by the page and the zip route
+- `src/download.rs`: what the download menus offer (kind groups, Formats, the bulk zip and its 500-Test cap), shared by the page and the zip routes
 - `src/server/`: server-only code: CLI, config, Admin auth, Postgres, Garage, the change log, and plain axum routes such as downloads
 - `migrations/`: sqlx migrations
 - `tests/http/`: the HTTP test suite and its harness (`support/`)

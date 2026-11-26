@@ -70,6 +70,7 @@ async fn a_published_test_is_listed_in_the_server_rendered_html() {
     assert_eq!(
         headings,
         [
+            "", // the page's select checkbox
             "Year",
             "Event",
             "Host",
@@ -629,23 +630,24 @@ async fn results_come_fifty_to_a_page_with_previous_and_next() {
     assert_eq!(first.text("#count"), "120 tests");
     assert_eq!(first.text("#page"), "1 / 3");
     assert_eq!(result_ids(&first), expected[..50]);
-    assert!(first.select("a#prev").is_empty(), "no Previous on page 1");
-    let next = first.one("a#next").value().attr("href").unwrap().to_owned();
+    // The pager's buttons submit the results form, which keeps the search.
+    assert!(first.select("#prev").is_empty(), "no Previous on page 1");
+    let next = first.form("#picks").press("#next").submit_url();
     assert_eq!(next, "/?host=Plant+City&page=2");
 
     let second = app.get_page(&next).await;
     assert_eq!(second.text("#page"), "2 / 3");
     assert_eq!(result_ids(&second), expected[50..100]);
-    let previous = second.one("a#prev").value().attr("href").unwrap();
-    assert_eq!(previous, "/?host=Plant+City");
-    assert_eq!(app.search(previous).await, expected[..50]);
-    let next = second.one("a#next").value().attr("href").unwrap().to_owned();
+    let previous = second.form("#picks").press("#prev").submit_url();
+    assert_eq!(previous, "/?host=Plant+City&page=1");
+    assert_eq!(app.search(&previous).await, expected[..50]);
+    let next = second.form("#picks").press("#next").submit_url();
 
     let third = app.get_page(&next).await;
     assert_eq!(third.text("#count"), "120 tests");
     assert_eq!(third.text("#page"), "3 / 3");
     assert_eq!(result_ids(&third), expected[100..]);
-    assert!(third.select("a#next").is_empty(), "no Next on the last page");
+    assert!(third.select("#next").is_empty(), "no Next on the last page");
 
     // A page past the end shows the last one.
     assert_eq!(app.search("/?host=Plant+City&page=9").await, expected[100..]);

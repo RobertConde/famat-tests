@@ -255,9 +255,10 @@ async fn the_format_is_kept_across_pages() {
     }
 
     let page = app.get_page("/?format=both").await;
-    assert_eq!(page.one("#next").value().attr("href"), Some("/?format=both&page=2"));
-    let page = app.get_page("/?format=both&page=2").await;
-    assert_eq!(page.one("#prev").value().attr("href"), Some("/?format=both"));
+    let next = page.form("#picks").press("#next").submit_url();
+    assert_eq!(next, "/?format=both&page=2");
+    let page = app.get_page(&next).await;
+    assert_eq!(page.form("#picks").press("#prev").submit_url(), "/?format=both&page=1");
     let original = page
         .select("#results tbody tr .split .fmt a")
         .into_iter()

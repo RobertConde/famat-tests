@@ -26,6 +26,10 @@ _Avoid_: Doc title, document type
 A part of a Test's Documents offered for download together, by what their kind contains: Tests (questions), Answers (answers only), Solutions (solutions), or Errata & other (nothing searchable). Combined Test+Solutions is in both Tests and Solutions.
 _Avoid_: Category, section
 
+**Selection**:
+The Tests ticked on the search page to download together, as one zip with a folder per Test. It lasts across pages and searches until cleared.
+_Avoid_: Cart, basket
+
 **Label source**:
 Who assigned a Document's kind and its Test's facet values: the student cataloguing sheet, an AI labeling pass, or an Admin. AI labels are always marked as such.
 _Avoid_: Provenance, author

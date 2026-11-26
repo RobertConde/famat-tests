@@ -12,17 +12,32 @@
 //! - `page`: 1-based, [`PAGE_SIZE`] Tests per page.
 //! - `format`: the download menus' Format switch, `pdf` (default),
 //!   `original` or `both`. It filters nothing; links keep it for the page.
+//! - `sel`: the selected Test IDs, comma-separated and/or repeated (see
+//!   [`selection_value`]). It filters nothing either. Only Published,
+//!   untrashed Tests stay selected; anything that isn't an ID is ignored.
+//! - `select=all`: also select every Test the search matches, when that
+//!   leaves at most [`MAX_BULK_TESTS`] selected.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
 
 use crate::{
-    app::{DocumentLink, FacetValue, SearchOptions, SearchQuery, SearchResults, TestRow, UNKNOWN},
-    download::{Contents, Format},
+    app::{DocumentLink, FacetValue, SearchOptions, SearchQuery, SearchResults, SelectedTest, TestRow, UNKNOWN},
+    download::{Contents, Format, GroupCounts, MAX_BULK_TESTS, parse_selection, selection_value},
 };
 
 pub const PAGE_SIZE: i64 = 50;
+
+/// The results order, over `tests t` joined to its Facet values as `m`,
+/// `c`, `h`, `dl` and `tt` (see [`matching_tests`]).
+pub(super) const RESULTS_ORDER: &str = "t.year DESC NULLS LAST,
+    m.display_order NULLS LAST, m.name,
+    c.display_order NULLS LAST, c.name,
+    h.display_order NULLS LAST, h.name,
+    dl.display_order NULLS LAST, dl.name,
+    tt.display_order NULLS LAST, tt.name,
+    t.id";
 
 /// One page of the search that `raw_query` (a URL query string, without the
 /// `?`) asks for.
@@ -39,7 +54,26 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
     let pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
     let page = params.page().clamp(1, pages);
     let tests = matching_tests(db, &filters, page).await?;
-    let link = |page: i64| Some(href(&query, page));
+
+    // Every match, while they would fit in one bulk zip, so the page knows
+    // whether to offer Select all.
+    let result_ids = match usize::try_from(total) {
+        Ok(total) if total <= MAX_BULK_TESTS => Some(matching_ids(db, &filters).await?),
+        _ => None,
+    };
+    let mut wanted = params.selected();
+    if params.first("select") == "all"
+        && let Some(result_ids) = &result_ids
+    {
+        let have: HashSet<i64> = wanted.iter().copied().collect();
+        let mut all = wanted.clone();
+        all.extend(result_ids.iter().filter(|id| !have.contains(id)));
+        if all.len() <= MAX_BULK_TESTS {
+            wanted = all;
+        }
+    }
+    let selection = selected_tests(db, &wanted).await?;
+    let selected: Vec<i64> = selection.iter().map(|t| t.id).collect();
 
     Ok(SearchResults {
         options: SearchOptions {
@@ -53,8 +87,6 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
         total,
         page,
         pages,
-        previous: if page > 1 { link(page - 1) } else { None },
-        next: if page < pages { link(page + 1) } else { None },
         format_links: Format::ALL
             .into_iter()
             .map(|format| {
@@ -66,11 +98,15 @@ pub async fn search(db: &PgPool, raw_query: Option<&str>) -> Result<SearchResult
                             ..query.clone()
                         },
                         page,
+                        &selected,
                     ),
                 )
             })
             .collect(),
+        clear_selection: href(&query, page, &[]),
         tests,
+        result_ids,
+        selection,
         query,
     })
 }
@@ -117,11 +153,23 @@ impl Params {
     fn page(&self) -> i64 {
         self.first("page").parse().unwrap_or(1)
     }
+
+    /// The Test IDs in every `sel` value, each once, in order. Values that
+    /// aren't IDs are ignored.
+    fn selected(&self) -> Vec<i64> {
+        let mut seen = HashSet::new();
+        self.0
+            .iter()
+            .filter(|(k, _)| k == "sel")
+            .flat_map(|(_, v)| parse_selection(v).unwrap_or_default())
+            .filter(|id| seen.insert(*id))
+            .collect()
+    }
 }
 
-/// The search page's URL for `query` at `page`: only the filters in use, so
-/// links stay short.
-fn href(query: &SearchQuery, page: i64) -> String {
+/// The search page's URL for `query` at `page` with `selected` Tests: only
+/// the filters in use, so links stay short.
+fn href(query: &SearchQuery, page: i64, selected: &[i64]) -> String {
     let page = page.to_string();
     let mut pairs: Vec<(&str, &str)> = [
         ("year", &query.year),
@@ -147,6 +195,10 @@ fn href(query: &SearchQuery, page: i64) -> String {
     // In form order: the hidden `format` field follows the checkboxes.
     if query.format != Format::default() {
         pairs.push(("format", query.format.slug()));
+    }
+    let selected = selection_value(selected.iter().copied());
+    if !selected.is_empty() {
+        pairs.push(("sel", &selected));
     }
     if page != "1" {
         pairs.push(("page", &page));
@@ -361,53 +413,14 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
          LEFT JOIN facet_values tt ON tt.id = t.test_type_id",
     );
     filters.push_where(&mut sql);
-    sql.push(
-        " ORDER BY t.year DESC NULLS LAST,
-                   m.display_order NULLS LAST, m.name,
-                   c.display_order NULLS LAST, c.name,
-                   h.display_order NULLS LAST, h.name,
-                   dl.display_order NULLS LAST, dl.name,
-                   tt.display_order NULLS LAST, tt.name,
-                   t.id
-          LIMIT ",
-    )
-    .push_bind(PAGE_SIZE)
-    .push(" OFFSET ")
-    .push_bind((page - 1) * PAGE_SIZE);
+    sql.push(format_args!(" ORDER BY {RESULTS_ORDER} LIMIT "))
+        .push_bind(PAGE_SIZE)
+        .push(" OFFSET ")
+        .push_bind((page - 1) * PAGE_SIZE);
     let tests: Vec<TestRecord> = sql.build_query_as().fetch_all(db).await?;
 
     let ids: Vec<i64> = tests.iter().map(|t| t.id).collect();
-    let documents: Vec<DocumentRecord> = sqlx::query_as(
-        "SELECT td.test_id, d.id, k.name AS kind, d.label,
-                CASE WHEN o.content_type <> 'application/pdf' AND o.extension <> 'pdf'
-                     THEN o.extension END AS original_extension,
-                k.contains_questions, k.contains_answers, k.contains_solutions
-         FROM test_documents td
-         JOIN documents d      ON d.id = td.document_id
-         JOIN document_kinds k ON k.id = d.kind_id
-         LEFT JOIN document_files o ON o.document_id = d.id AND o.role = 'original'
-         WHERE td.test_id = ANY($1) AND d.published AND d.trashed_at IS NULL
-         ORDER BY k.display_order, k.name, d.label NULLS FIRST, d.id",
-    )
-    .bind(&ids)
-    .fetch_all(db)
-    .await?;
-
-    let mut by_test: HashMap<i64, Vec<DocumentLink>> = HashMap::new();
-    for d in documents {
-        by_test.entry(d.test_id).or_default().push(DocumentLink {
-            id: d.id,
-            kind: d.kind,
-            label: d.label,
-            original_extension: d.original_extension,
-            contents: Contents {
-                questions: d.contains_questions,
-                answers: d.contains_answers,
-                solutions: d.contains_solutions,
-            },
-        });
-    }
-
+    let mut by_test = published_documents(db, &ids).await?;
     Ok(tests
         .into_iter()
         .map(|t| TestRow {
@@ -425,6 +438,70 @@ async fn matching_tests(db: &PgPool, filters: &Filters, page: i64) -> Result<Vec
             documents: by_test.remove(&t.id).unwrap_or_default(),
         })
         .collect())
+}
+
+/// The IDs of every matching Test, in no particular order.
+async fn matching_ids(db: &PgPool, filters: &Filters) -> Result<Vec<i64>, sqlx::Error> {
+    let mut sql = QueryBuilder::<Postgres>::new("SELECT t.id FROM tests t");
+    filters.push_where(&mut sql);
+    sql.build_query_scalar().fetch_all(db).await
+}
+
+/// Those of the Tests `ids` that are Published and untrashed, by ID, with
+/// how many Published, untrashed Documents each has in each kind group.
+async fn selected_tests(db: &PgPool, ids: &[i64]) -> Result<Vec<SelectedTest>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let visible: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM tests WHERE id = ANY($1) AND published AND trashed_at IS NULL ORDER BY id")
+            .bind(ids)
+            .fetch_all(db)
+            .await?;
+    let mut by_test = published_documents(db, &visible).await?;
+    Ok(visible
+        .into_iter()
+        .map(|id| SelectedTest {
+            id,
+            counts: GroupCounts::of(by_test.remove(&id).unwrap_or_default().iter().map(|d| d.contents)),
+        })
+        .collect())
+}
+
+/// The Published, untrashed Documents of each of the Tests `ids`, in
+/// results order (kind, label, ID).
+async fn published_documents(db: &PgPool, ids: &[i64]) -> Result<HashMap<i64, Vec<DocumentLink>>, sqlx::Error> {
+    let documents: Vec<DocumentRecord> = sqlx::query_as(
+        "SELECT td.test_id, d.id, k.name AS kind, d.label,
+                CASE WHEN o.content_type <> 'application/pdf' AND o.extension <> 'pdf'
+                     THEN o.extension END AS original_extension,
+                k.contains_questions, k.contains_answers, k.contains_solutions
+         FROM test_documents td
+         JOIN documents d      ON d.id = td.document_id
+         JOIN document_kinds k ON k.id = d.kind_id
+         LEFT JOIN document_files o ON o.document_id = d.id AND o.role = 'original'
+         WHERE td.test_id = ANY($1) AND d.published AND d.trashed_at IS NULL
+         ORDER BY k.display_order, k.name, d.label NULLS FIRST, d.id",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+
+    let mut by_test: HashMap<i64, Vec<DocumentLink>> = HashMap::new();
+    for d in documents {
+        by_test.entry(d.test_id).or_default().push(DocumentLink {
+            id: d.id,
+            kind: d.kind,
+            label: d.label,
+            original_extension: d.original_extension,
+            contents: Contents {
+                questions: d.contains_questions,
+                answers: d.contains_answers,
+                solutions: d.contains_solutions,
+            },
+        });
+    }
+    Ok(by_test)
 }
 
 /// Years that Published Tests have, newest first.

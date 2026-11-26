@@ -41,20 +41,43 @@ impl Page {
             element,
             selects: Vec::new(),
             checks: Vec::new(),
+            submitter: None,
         }
     }
 }
 
 /// A GET form being filled in, submitted the way a browser with JavaScript
 /// off does it: every named control in document order, unticked checkboxes
-/// left out, encoded as `application/x-www-form-urlencoded`.
+/// left out, encoded as `application/x-www-form-urlencoded`. Only the
+/// pressed submit button (if any) is sent, and its `formaction` wins.
 pub struct Form<'a> {
     element: ElementRef<'a>,
     selects: Vec<(String, String)>,
     checks: Vec<(String, String, bool)>,
+    submitter: Option<ElementRef<'a>>,
 }
 
-impl Form<'_> {
+impl<'a> Form<'a> {
+    /// Submit with the one submit button in the form matching a CSS selector.
+    pub fn press(mut self, css: &str) -> Self {
+        let selector = Selector::parse(css).unwrap_or_else(|e| panic!("bad selector {css:?}: {e}"));
+        let found: Vec<_> = self.element.select(&selector).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one {css:?} in the form, found {}",
+            found.len()
+        );
+        let button = found[0];
+        assert_eq!(button.value().name(), "button", "{css} is not a button");
+        assert!(
+            matches!(button.value().attr("type"), None | Some("submit")),
+            "{css} is not a submit button"
+        );
+        self.submitter = Some(button);
+        self
+    }
+
     /// Pick the option whose value is `value` in the `name` dropdown.
     pub fn select(mut self, name: &str, value: &str) -> Self {
         self.selects.push((name.to_owned(), value.to_owned()));
@@ -69,13 +92,23 @@ impl Form<'_> {
 
     /// The path and query string the browser would GET.
     pub fn submit_url(&self) -> String {
-        let action = self.element.value().attr("action").unwrap_or("");
+        let action = self
+            .submitter
+            .and_then(|button| button.value().attr("formaction"))
+            .or(self.element.value().attr("action"))
+            .unwrap_or("");
         let mut url = reqwest::Url::parse("http://famat.test/").unwrap().join(action).unwrap();
-        let controls = Selector::parse("select[name], input[name]").unwrap();
+        let controls = Selector::parse("select[name], input[name], button[name]").unwrap();
         let options = Selector::parse("option").unwrap();
         let mut pairs = Vec::new();
         for control in self.element.select(&controls) {
             let name = control.value().attr("name").unwrap();
+            if control.value().name() == "button" {
+                if self.submitter.is_some_and(|button| button.id() == control.id()) {
+                    pairs.push((name.to_owned(), control.value().attr("value").unwrap_or("").to_owned()));
+                }
+                continue;
+            }
             if control.value().name() == "select" {
                 let options: Vec<_> = control.select(&options).collect();
                 let value_of = |o: &ElementRef| o.value().attr("value").map_or_else(|| text(*o), str::to_owned);
